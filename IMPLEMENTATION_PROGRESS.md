@@ -176,12 +176,21 @@ and `/public/*`. All `/admin/*` routes are gated by `can:admin`. Verified 2026-1
 - New `docs/FRONTEND_INTEGRATION_HANDOFF.md` (endpoints with guards, auth flows, payloads, error catalogue, pagination, integration order).
 - Recommendation: **GO** for the Next.js frontend.
 
+### 2026-11-01 — Published to GitHub
+- Repository: https://github.com/omeralis/linklibrary-api — **PRIVATE**, default branch `main`.
+- Initial commit `e4332eb49e443dde61af7a2070ccce881681bdcf` (285 files), pushed without force; no prior Git history existed.
+- `.gitignore` hardened: `.env`, `.env.*` (except `.env.example`), `vendor/`, `node_modules/`, `_to_delete/`, `*.log`, DB dumps (`*.sql`, `*.dump`, `*.backup`, `*.bak`), archives, temp files, key/cert files.
+- `.gitattributes`: `*.cmd`, `*.bat`, `*.ps1` checked out with CRLF.
+- Secret scan before commit (values never printed): no API keys, tokens, private keys, app keys or real DB credentials in tracked files; the real DB password appears only in the ignored `.env` / `.env.testing`. Intentional local-only placeholders remain: demo password `Password12345` (DemoSeeder, APP_ENV=local only), docker-compose dev `POSTGRES_PASSWORD`, test fixture `token=SECRET…` in `SafeHttpClientTest`.
+- README rewritten: stack, installation, PostgreSQL setup, env config, migrations/seeders, queue/scheduler, tests, API docs location.
+- Git author: `omeralis <37330522+omeralis@users.noreply.github.com>` (repo-local config). GitHub CLI authenticated as `omeralis` (scopes repo, read:org, gist).
+
 ## 9. Errors & Unresolved Issues
 
 | Date | Issue | Status | Resolution / note |
 |------|-------|--------|-------------------|
 | 2026-11-01 | packagist.org returns 403 in build sandbox. | RESOLVED (workaround) | GitHub-tag-based Composer repo; see §8. |
-| 2026-11-01 | `composer.lock` not delivered (sandbox lock references local paths). | OPEN (by design) | Run `composer update` once locally, then commit the lock. |
+| 2026-11-01 | `composer.lock` not delivered (sandbox lock references local paths). | RESOLVED | Generated on Windows from packagist and committed to GitHub. |
 | 2026-11-01 | Docker images not built/run in sandbox (no Docker Hub). | OPEN | `Dockerfile`/`docker-compose.yml` written but untested; verify with `docker compose up --build`. |
 | 2026-11-01 | Live AI providers and Google Safe Browsing/Web Risk not exercised (no credentials; tests mock them). | OPEN | Verify with real keys in a staging environment. Check current Safe Browsing licensing (non-commercial) vs Web Risk. |
 | 2026-11-01 | Arabic stemming is light (Snowball); mitigated with orthographic folding + `simple` prefix matching. | ACCEPTED LIMITATION | Documented in ARCHITECTURE.md. |
@@ -203,12 +212,13 @@ and `/public/*`. All `/admin/*` routes are gated by `can:admin`. Verified 2026-1
 
 ## 10. Next Task
 
-**Exact next task:** Re-run `scripts\local-setup.cmd` to confirm 0 deprecations on PHP 8.5 (expected 229 passed, 1 skipped) and run `php artisan linklibrary:doctor --network`; then start the Next.js frontend following `docs/FRONTEND_INTEGRATION_HANDOFF.md` §9. Later:  `composer update` (creates `composer.lock` from packagist), create the PostgreSQL databases, run the test suite, then verify `docker compose up --build`. Optional next steps: configure a real threat-intel provider (Web Risk for commercial use) and an AI provider in staging; start the Next.js frontend using `docs/FRONTEND_INTEGRATION.md` and `docs/openapi.yaml`.
+**Exact next task:** Clone/pull from `https://github.com/omeralis/linklibrary-api` (private) for any new work. Re-run `scripts\local-setup.cmd` to confirm 0 deprecations on PHP 8.5 (expected 229 passed, 1 skipped) and run `php artisan linklibrary:doctor --network`; then start the Next.js frontend following `docs/FRONTEND_INTEGRATION_HANDOFF.md` §9. Later: verify `docker compose up --build`. Optional next steps: configure a real threat-intel provider (Web Risk for commercial use) and an AI provider in staging; start the Next.js frontend using `docs/FRONTEND_INTEGRATION.md` and `docs/openapi.yaml`.
 
 **Resume commands:**
 ```bash
 cd E:\Dev\LinkLibrary
-composer update                      # first time only (no lock shipped); later: composer install
+git pull                             # repo: github.com/omeralis/linklibrary-api (private)
+composer install                     # composer.lock is committed
 copy .env.example .env               # (cp on macOS/Linux)
 php artisan key:generate
 # create PostgreSQL role/databases: linklibrary + linklibrary_test (see README)
@@ -229,4 +239,5 @@ php artisan schedule:work
 |------|---------|
 | 2026-11-01 | Created progress file; repo empty; spec missing → blocked. |
 | 2026-11-01 | Local Windows setup verified; integration-readiness audit done (fixes above), handoff doc written. GO for frontend. |
+| 2026-11-01 | Published backend to private GitHub repo `omeralis/linklibrary-api` (`main`, initial commit e4332eb); README/.gitignore updated; secret scan clean. |
 | 2026-11-01 | Spec received. Bootstrapped Laravel 13 in sandbox; implemented full schema, auth, URL/SSRF layer, security scanning, extraction, AI, links, taxonomy, collections, invitations, access graph, discovery, search, notifications, audit, jobs/scheduler, OpenAPI, docs, Docker files. 228 tests passing, PHPStan clean. Copied to `E:\Dev\LinkLibrary`. |
