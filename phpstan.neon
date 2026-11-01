@@ -1,0 +1,16 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    level: 5
+    paths:
+        - app
+        - database
+        - routes
+    tmpDir: storage/framework/phpstan
+    ignoreErrors:
+        # Sanctum's HasApiTokens template defaults TToken to PersonalAccessToken, but cookie (SPA)
+        # authentication yields a TransientToken at runtime, so this narrowing check is required.
+        -
+            identifier: function.alreadyNarrowedType
+            path: app/Models/User.php
