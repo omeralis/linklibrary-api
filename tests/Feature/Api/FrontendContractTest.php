@@ -107,7 +107,8 @@ class FrontendContractTest extends TestCase
         $this->contract($this->as($viewerToken)->postJson("/api/v1/invitations/{$inviteToken}/accept")->assertOk(), 'POST', '/invitations/{token}/accept');
         $this->contract($this->as($viewerToken)->getJson('/api/v1/shared-with-me')->assertOk(), 'GET', '/shared-with-me');
         $this->contract($this->as($viewerToken)->getJson("/api/v1/links/{$id}")->assertOk(), 'GET', '/links/{publicId}');
-        $this->contract($this->as($token)->getJson("/api/v1/links/{$id}/access")->assertOk(), 'GET', '/links/{publicId}/access');
+        $access = $this->as($token)->getJson("/api/v1/links/{$id}/access")->assertOk();
+        $this->contract($access, 'GET', '/links/{publicId}/access');
 
         // 5. Search & taxonomy
         $this->contract($this->as($token)->getJson('/api/v1/search?q=guide&scope=all')->assertOk(), 'GET', '/search');
@@ -131,6 +132,15 @@ class FrontendContractTest extends TestCase
         $this->contract($this->getJson("/api/v1/public/collections/{$cid}")->assertOk(), 'GET', '/public/collections/{publicId}');
         $this->contract($this->getJson('/api/v1/public/search?q=guide')->assertOk(), 'GET', '/public/search');
         $this->contract($this->getJson('/api/v1/public/links/'.Str::uuid())->assertNotFound(), 'GET', '/public/links/{publicId}');
+
+        // 8. Revocation (owner) — documented as { revoked_users }.
+        $this->app['auth']->forgetGuards();
+        $grantId = $access->json('data.0.id');
+        $this->contract(
+            $this->as($token)->deleteJson("/api/v1/links/{$id}/access/{$grantId}")->assertOk()->assertJsonPath('data.revoked_users', 1),
+            'DELETE',
+            '/links/{publicId}/access/{grantId}',
+        );
     }
 
     public function test_documented_request_parameters_match_validation_rules(): void

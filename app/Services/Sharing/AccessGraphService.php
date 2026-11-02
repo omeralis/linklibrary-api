@@ -203,14 +203,22 @@ class AccessGraphService
     /**
      * Revoke a grant and every dependent grant. Idempotent.
      *
-     * @return list<int> user IDs whose grants were revoked by this call
+     * Only users who actually LOST access are returned: someone whose grant in the revoked subtree was
+     * removed but who still holds a valid grant through an independent path keeps access, so they are
+     * neither counted nor notified.
+     *
+     * @return list<int> user IDs who no longer have any valid access to the saved link
      */
     public function revokeGrant(LinkAccessGrant $grant, ?User $actor, string $reason = 'REVOKED'): array
     {
         return DB::transaction(function () use ($grant, $actor, $reason): array {
             $this->lockSavedLink($grant->saved_link_id);
+            $revoked = $this->revokeSubtreeLocked([$grant->id], $actor, $reason, $grant->saved_link_id);
 
-            return $this->revokeSubtreeLocked([$grant->id], $actor, $reason, $grant->saved_link_id);
+            return array_values(array_filter(
+                $revoked,
+                fn (int $userId) => $this->validGrantIdsForGrantee($userId, $grant->saved_link_id) === [],
+            ));
         });
     }
 

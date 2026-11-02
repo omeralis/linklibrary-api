@@ -6,7 +6,7 @@
 
 **Status legend:** `NOT_STARTED` · `IN_PROGRESS` · `COMPLETED` (implementation + tests verified) · `BLOCKED`
 
-**Last updated:** 2026-11-01 (Asia/Riyadh)
+**Last updated:** 2026-11-02 (Asia/Riyadh)
 
 ---
 
@@ -131,6 +131,9 @@ and `/public/*`. All `/admin/*` routes are gated by `can:admin`. Verified 2026-1
 | 2026-11-01 | Windows: `php artisan test` (test DB `linklibrary_test`) | Full suite | **222 passed, 1 skipped (ConcurrentRevocationTest: no pcntl on Windows), 5 deprecated, 1091 assertions** |
 | 2026-11-01 | Audit (sandbox, PHP 8.3) after readiness fixes | Full suite | **230 passed, 1219 assertions** incl. new `FrontendContractTest` (2 tests); PHPStan clean; Pint clean |
 | 2026-11-01 | Windows re-run after audit fixes | Full suite | PENDING — expected 229 passed + 1 skipped, 0 deprecated |
+| 2026-11-02 | Real-backend integration audit (cloud sandbox: PHP 8.5.12, PostgreSQL 16, isolated DB `linklibrary_e2e`; tests on `linklibrary_test`) | Full suite | **231 passed, 1245 assertions** (new: independent-path revocation test; contract walk now covers `DELETE /links/{id}/access/{grantId}`); PHPStan clean; Pint clean |
+| 2026-11-02 | Frontend `e2e/real` Playwright suite against this API (see frontend `docs/REAL_BACKEND_INTEGRATION_REPORT.md`) | HTTP + UI | **42 passed, 0 failed** (1 opt-in screenshot test skipped) |
+| 2026-11-02 | `php artisan linklibrary:doctor --network` (cloud sandbox) | Doctor | All checks OK except outbound HTTPS probe (sandbox DNS policy; real extraction of pypi.org verified separately) and the expected warnings (mail=log, heuristic-only security). Windows run: NOT VERIFIED in this session |
 
 ---
 
@@ -206,6 +209,9 @@ and `/public/*`. All `/admin/*` routes are gated by `can:admin`. Verified 2026-1
 | 2026-11-01 | SSR rate limiting: Next.js server would share one IP budget on public endpoints. | RESOLVED | Optional `FRONTEND_SERVER_KEY` + `X-Frontend-Key`/`X-Client-IP`. |
 | 2026-11-01 | Without a threat-intel key all links stay UNKNOWN → publish/share/explore untestable locally. | MITIGATED | `php artisan linklibrary:dev-mark-clear` (APP_ENV=local only, audited manual review). Production still needs Web Risk/Safe Browsing. |
 | 2026-11-01 | Windows PHP may lack a CA bundle (`curl.cainfo`) → HTTPS extraction fails. | OPEN (check) | `php artisan linklibrary:doctor --network` reports it. |
+| 2026-11-02 | Recursive revocation counted (`revoked_users`) and notified users who still had access through an independent path (e.g. owner→bob→dave plus owner→dave: revoking bob notified dave "access removed"). Found by the real-backend E2E suite. | RESOLVED | `AccessGraphService::revokeGrant` returns only users with no remaining valid grant; regression test `test_users_keeping_access_through_another_path_are_not_counted_or_notified`. |
+| 2026-11-02 | OpenAPI `Envelope.data` emitted as `[]` (invalid schema; frontend generator had to patch it). | RESOLVED | `scripts/build-openapi.php` emits an any-value schema with a description; spec regenerated. |
+| 2026-11-02 | `DELETE /links/{id}/access/{grantId}` documented as message-only although it returns `{ revoked_users }`. | RESOLVED | Documented; covered by `FrontendContractTest`. |
 | 2026-11-01 | Fixed during testing: middleware priority (locale on 401), savepoints around unique-violation catches, `CSRF_TOKEN_MISMATCH` code mapping, Windows-1256 decoding, verification signature (relative URLs). | RESOLVED | Covered by tests. |
 
 ---
@@ -237,6 +243,7 @@ php artisan schedule:work
 
 | Date | Summary |
 |------|---------|
+| 2026-11-02 | Real-backend integration audit with the Next.js frontend: fixed recursive-revocation over-reporting (count + notifications), OpenAPI `Envelope.data` and revoke-response schema; 231 tests passing; frontend real E2E 42/42. Windows-side checks (PHP 8.5 on Windows, PG18, doctor --network, storage link) not re-verified in this session. |
 | 2026-11-01 | Created progress file; repo empty; spec missing → blocked. |
 | 2026-11-01 | Local Windows setup verified; integration-readiness audit done (fixes above), handoff doc written. GO for frontend. |
 | 2026-11-01 | Published backend to private GitHub repo `omeralis/linklibrary-api` (`main`, initial commit e4332eb); README/.gitignore updated; secret scan clean. |

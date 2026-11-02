@@ -149,7 +149,7 @@ $paths = [
     '/links/{publicId}/invitations/{invitationId}' => ['delete' => $op('Sharing', 'Revoke a pending invitation', ['200' => $message], ['parameters' => [$publicId, $pathParam('invitationId', 'Invitation id')]])],
     '/invitations/{token}/accept' => ['post' => $op('Sharing', 'Accept an invitation (authenticated, verified e-mail must match)', ['200' => $ok($envelope($ref('SavedLink'))), '409' => ['$ref' => '#/components/responses/Conflict'], '410' => ['description' => 'Invitation expired'] + $json($ref('Error'))], ['parameters' => [$pathParam('token', '64-hex-character token from the e-mail', '')]])],
     '/links/{publicId}/access' => ['get' => $op('Sharing', 'Access graph (owner: all grants; viewer: grants they issued)', ['200' => $ok($envelope(['type' => 'array', 'items' => $ref('Grant')], ['type' => 'object', 'properties' => ['allow_resharing' => ['type' => 'boolean'], 'viewer_count' => ['type' => 'integer']]]))], ['parameters' => [$publicId]])],
-    '/links/{publicId}/access/{grantId}' => ['delete' => $op('Sharing', 'Revoke a grant and all dependent grants (owner, grantor, or the grantee leaving)', ['200' => $message], ['parameters' => [$publicId, $pathParam('grantId', 'Grant id')]])],
+    '/links/{publicId}/access/{grantId}' => ['delete' => $op('Sharing', 'Revoke a grant and all dependent grants (owner, grantor, or the grantee leaving). Users who still hold a valid grant through an independent path keep access and are neither counted nor notified.', ['200' => $ok($envelope(['type' => 'object', 'required' => ['revoked_users'], 'properties' => ['revoked_users' => ['type' => 'integer', 'minimum' => 0, 'description' => 'Number of users who lost all access to the link']]]))], ['parameters' => [$publicId, $pathParam('grantId', 'Grant id')]])],
     '/shared-with-me' => ['get' => $op('Sharing', 'Links shared with me (viewer representation)', ['200' => $ok($list('SavedLink'))], ['parameters' => [...$linkFilters, $query('sort', ['enum' => ['latest', 'oldest', 'title', 'popular', 'relevance']]), ...$pageParams]])],
 
     // ---------------------------------------------------------------- Collections
@@ -250,7 +250,7 @@ $spec = [
             'RateLimited' => ['description' => 'Too many requests (RATE_LIMITED); see Retry-After'] + $json($ref('Error')),
         ],
         'schemas' => [
-            'Envelope' => ['type' => 'object', 'required' => ['success'], 'properties' => ['success' => ['const' => true], 'message' => $nullableStr, 'data' => [], 'meta' => ['type' => 'object']]],
+            'Envelope' => ['type' => 'object', 'required' => ['success'], 'properties' => ['success' => ['const' => true], 'message' => $nullableStr, 'data' => ['description' => 'Response payload (any JSON value; null for message-only responses). Each operation narrows it with allOf.'], 'meta' => ['type' => 'object']]],
             'Error' => ['type' => 'object', 'required' => ['success', 'message', 'errors', 'code'], 'properties' => [
                 'success' => ['const' => false], 'message' => ['type' => 'string'], 'errors' => ['type' => 'object', 'additionalProperties' => ['type' => 'array', 'items' => ['type' => 'string']]], 'code' => ['type' => 'string'],
             ]],

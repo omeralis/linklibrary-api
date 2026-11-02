@@ -1912,7 +1912,7 @@ paths:
     delete:
       tags:
         - Sharing
-      summary: 'Revoke a grant and all dependent grants (owner, grantor, or the grantee leaving)'
+      summary: 'Revoke a grant and all dependent grants (owner, grantor, or the grantee leaving). Users who still hold a valid grant through an independent path keep access and are neither counted nor notified.'
       parameters:
         -
           name: publicId
@@ -1936,7 +1936,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Envelope'
+                allOf:
+                  -
+                    $ref: '#/components/schemas/Envelope'
+                  -
+                    type: object
+                    properties:
+                      data: { type: object, required: [revoked_users], properties: { revoked_users: { type: integer, minimum: 0, description: 'Number of users who lost all access to the link' } } }
         401:
           $ref: '#/components/responses/Unauthenticated'
         403:
@@ -3596,7 +3602,8 @@ components:
           type:
             - string
             - 'null'
-        data: []
+        data:
+          description: 'Response payload (any JSON value; null for message-only responses). Each operation narrows it with allOf.'
         meta:
           type: object
     Error:

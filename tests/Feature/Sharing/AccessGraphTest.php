@@ -172,6 +172,25 @@ class AccessGraphTest extends TestCase
         $this->invite($this->c, $this->saved, $this->d->email)->assertStatus(403);
     }
 
+    public function test_users_keeping_access_through_another_path_are_not_counted_or_notified(): void
+    {
+        // A → B → C, A → B → D and A → D directly: revoking B removes B and C, D keeps access.
+        $this->share($this->a, $this->saved, $this->b);
+        $this->share($this->b, $this->saved, $this->c);
+        $this->share($this->b, $this->saved, $this->d);
+        $this->share($this->a, $this->saved, $this->d);
+
+        $this->revoke($this->a, $this->grantId($this->saved, $this->a, $this->b))
+            ->assertOk()
+            ->assertJsonPath('data.revoked_users', 2);
+
+        $this->assertFalse($this->canView($this->b, $this->saved));
+        $this->assertFalse($this->canView($this->c, $this->saved));
+        $this->assertTrue($this->canView($this->d, $this->saved));
+        Notification::assertSentTo([$this->b, $this->c], AccessRevokedNotification::class);
+        Notification::assertNotSentTo($this->d, AccessRevokedNotification::class);
+    }
+
     public function test_revocation_permissions(): void
     {
         $this->share($this->a, $this->saved, $this->b);
