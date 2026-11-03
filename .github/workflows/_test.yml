@@ -1,0 +1,39 @@
+name: _test
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: ci, POSTGRES_PASSWORD: ci-only-throwaway, POSTGRES_DB: linklibrary_test }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5432'
+      DB_DATABASE: linklibrary_test
+      DB_USERNAME: ci
+      DB_PASSWORD: ci-only-throwaway
+      APP_ENV: testing
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pgsql, pdo_pgsql, intl, mbstring, gd, bcmath, zip, xml, curl
+          tools: composer:v2
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: composer audit --no-interaction
+      - run: cp .env.example .env && php artisan key:generate --ansi
+      - run: vendor/bin/pint --test
+      - run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+      - run: php artisan config:clear && php artisan test --compact

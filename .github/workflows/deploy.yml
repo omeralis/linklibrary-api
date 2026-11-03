@@ -1,0 +1,97 @@
+name: Deploy API
+# DISABLED BY DEFAULT: the deploy job runs only when the repository variable DEPLOY_ENABLED is exactly 'true'.
+# Tests always run on main; nothing is uploaded to the server until the switch is turned on (see docs/CICD.md).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: deploy (HEAD of main, tests re-run) or rollback
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      release_id:
+        description: "rollback only: release directory name (empty = previous release)"
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: linklibrary-production     # per repo; the server also holds a flock so api and web releases never overlap
+  cancel-in-progress: false
+jobs:
+  test:
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
+    uses: ./.github/workflows/_test.yml
+
+  deploy:
+    needs: test
+    if: ${{ vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production        # configure required reviewers here for a manual approval gate
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pgsql, pdo_pgsql, intl, mbstring, gd, bcmath, zip, xml, curl
+          tools: composer:v2
+          coverage: none
+      - name: Build release (tracked files only, locked production dependencies)
+        run: |
+          mkdir -p build/api
+          git archive HEAD | tar -x -C build/api
+          cd build/api
+          composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts
+          APP_ENV=production APP_KEY="base64:$(openssl rand -base64 32)" php artisan package:discover --ansi
+          rm -rf .github tests deploy docs node_modules .env .env.* 
+          tar --hard-dereference --owner=0 --group=0 --numeric-owner -czf "$GITHUB_WORKSPACE/release.tgz" .
+          sha256sum "$GITHUB_WORKSPACE/release.tgz" | cut -d' ' -f1 > "$GITHUB_WORKSPACE/release.sha256"
+      - name: Prepare SSH (dedicated restricted key, pinned host key)
+        env:
+          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
+          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$KEY" && test -n "$KNOWN" || { echo "missing SSH secrets"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/ll_deploy && chmod 600 ~/.ssh/ll_deploy
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+      - name: Upload, promote, smoke-test (server rolls back automatically if smoke fails)
+        env:
+          HOST: ${{ vars.LL_SSH_HOST }}
+          PORT: ${{ vars.LL_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.LL_SSH_USER || 'llci' }}
+        run: |
+          [[ "$HOST" =~ ^[A-Za-z0-9.-]{1,253}$ && "$PORT" =~ ^[0-9]{1,5}$ && "$SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid SSH variables"; exit 1; }
+          SSH="ssh -i $HOME/.ssh/ll_deploy -p $PORT -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes $SSH_USER@$HOST"
+          $SSH "upload api $GITHUB_SHA $(cat release.sha256)" < release.tgz
+          $SSH "deploy api $GITHUB_SHA $(cat release.sha256)"
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/ll_deploy
+
+  rollback:
+    if: ${{ inputs.action == 'rollback' && vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Roll back (symlink switch only; database is never rolled back)
+        env:
+          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
+          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
+          HOST: ${{ vars.LL_SSH_HOST }}
+          PORT: ${{ vars.LL_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.LL_SSH_USER || 'llci' }}
+          RID: ${{ inputs.release_id }}
+        run: |
+          [[ "$HOST" =~ ^[A-Za-z0-9.-]{1,253}$ && "$PORT" =~ ^[0-9]{1,5}$ && "$SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid SSH variables"; exit 1; }
+          [[ -z "$RID" || "$RID" =~ ^[0-9A-Za-z._-]{3,80}$ ]] || { echo "bad release id"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/ll_deploy && chmod 600 ~/.ssh/ll_deploy
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/ll_deploy -p "$PORT" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes "$SSH_USER@$HOST" "rollback $RID"
+          rm -f ~/.ssh/ll_deploy

@@ -1,0 +1,32 @@
+#!/bin/bash
+# SSH forced command for the dedicated CI account (see authorized_keys line in docs/CICD.md).
+# Installed ROOT-OWNED at /srv/linklibrary/tools/ll-ingest (0755). It is the ONLY thing the CI key can run.
+#   upload <api|web> <40-hex-commit> <64-hex-sha256>   (tarball on stdin, max 400 MB)
+#   deploy <api|web> <40-hex-commit> <64-hex-sha256>
+#   rollback [<release-id>]
+#   status
+set -euo pipefail
+umask 077
+export PATH=/usr/bin:/bin
+INC=/srv/linklibrary/incoming
+read -r verb a b c _ <<<"${SSH_ORIGINAL_COMMAND:-}"
+case "$verb" in
+upload)
+  [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo "bad args" >&2; exit 2; }
+  [ "$(df --output=avail -B1M "$INC" | tail -1)" -gt 2500 ] || { echo "disk space low" >&2; exit 2; }
+  find "$INC" -maxdepth 1 -type f \( -name '.up.*' -o -name '*.tgz' \) -mmin +120 -delete 2>/dev/null || true
+  tmp=$(mktemp "$INC/.up.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+  head -c 419430401 > "$tmp"
+  [ "$(stat -c %s "$tmp")" -le 419430400 ] || { echo "too large" >&2; exit 2; }
+  [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$c" ] || { echo "sha256 mismatch" >&2; exit 2; }
+  mv -f "$tmp" "$INC/$a-$b.tgz"; trap - EXIT; echo "uploaded $a ${b:0:7}" ;;
+deploy)
+  [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo "bad args" >&2; exit 2; }
+  exec sudo -n /srv/linklibrary/tools/ll-release deploy "$a" "$b" "$c" ;;
+rollback)
+  if [ -n "${a:-}" ]; then [[ "$a" =~ ^[0-9A-Za-z._-]{3,80}$ ]] || { echo "bad id" >&2; exit 2; }; fi
+  exec sudo -n /srv/linklibrary/tools/ll-release rollback ${a:+"$a"} ;;
+status)
+  readlink -f /srv/linklibrary/current; ls -1t /srv/linklibrary/releases | head -6 ;;
+*) echo "denied" >&2; exit 2 ;;
+esac

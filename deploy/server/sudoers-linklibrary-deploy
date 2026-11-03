@@ -1,0 +1,5 @@
+# /etc/sudoers.d/linklibrary-deploy   (mode 0440, validate with: visudo -cf /etc/sudoers.d/linklibrary-deploy)
+# The CI account may run exactly ONE root-owned script. No shell, no other command, no passwordless ALL.
+# Arguments are validated strictly inside the script (exact argument count; component; 40-hex commit; 64-hex sha256; release id).
+Defaults:llci !requiretty, env_reset, secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
+llci ALL=(root) NOPASSWD: /srv/linklibrary/tools/ll-release deploy api *, /srv/linklibrary/tools/ll-release deploy web *, /srv/linklibrary/tools/ll-release rollback, /srv/linklibrary/tools/ll-release rollback *
