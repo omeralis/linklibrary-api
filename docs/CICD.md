@@ -57,6 +57,15 @@ Prerequisite checks before enabling: `/srv/linklibrary/shared/release-prev` is c
 `ALTER ROLE ... PASSWORD` only by postgres (the script uses `runuser -u postgres`); the existing release must have `api/.env` and
 `api/storage` as symlinks to `shared/` (as provisioned).
 
+## Hardening notes for `ll-release` (root script)
+- Root only works on root-owned trees; a new release is `root:linklibrary`, read-only for the app account. The app account (which also runs
+  the migration code) can write only `api/bootstrap/cache` and `web/.next/cache`; root never chmods/chowns/follows anything inside them.
+- The temporary `linklibrary_migrator` password is reset on success, failure, SIGINT/SIGTERM/SIGHUP (EXIT trap) and carries `VALID UNTIL`
+  30 minutes as a backstop for SIGKILL/power loss. It travels in the command environment, never in argv. If a reset ever fails the script
+  prints CRITICAL; fix with `sudo -u postgres psql -c "ALTER ROLE linklibrary_migrator PASSWORD NULL"`.
+- Send TERM to the whole process group (sudo/systemd do); bash runs its trap after the foreground child ends.
+- After changing `deploy/server/*` in Git, the files must be RE-INSTALLED on the VPS by an administrator (CI deliberately cannot update them).
+
 ## Server preflight (read-only, before the setup commands)
 ```
 sudo sshd -T | grep -i -E '^(allowusers|allowgroups|denyusers|passwordauthentication|authorizedkeysfile)'   # if AllowUsers/AllowGroups is set, llci must be added or login fails

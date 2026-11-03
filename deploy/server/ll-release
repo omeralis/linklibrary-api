@@ -5,9 +5,16 @@
 #   ll-release deploy <api|web> <40-hex-commit> <64-hex-sha256>   promote /srv/linklibrary/incoming/<component>-<commit>.tgz
 #   ll-release rollback [<release-id>]                            switch back to the previous (or a named) release
 #
+# Design rules (security):
+#  * Root only ever operates on trees that are root-owned and not writable by anyone else at that moment. A new release dir is
+#    root:linklibrary, read-only for the app account; the app account (which also runs the migration code) can write ONLY
+#    api/bootstrap/cache and web/.next/cache, and root never chmod/chown/follows anything inside those two directories.
+#  * Everything uploaded by CI is untrusted until copied (O_NOFOLLOW, single read) into a root-only dir and digest-checked.
+#  * Deletions are limited to: the new (never activated) release dir, releases matching RELEASE_RE directly under releases/,
+#    the root-only staging dir, the current.new link, and the one-shot uploaded package.
 # Touches ONLY /srv/linklibrary and the linklibrary-* units. Never touches Nginx, PM2, omerali.* or other databases.
 set -euo pipefail
-umask 027
+umask 022
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 unset BASH_ENV ENV LD_LIBRARY_PATH LD_PRELOAD
 ROOT=/srv/linklibrary
@@ -19,23 +26,51 @@ PHP=$ROOT/tools/php
 TS=$(date +%Y%m%d-%H%M%S)
 NEW=
 SWITCHED=0
-RELEASE_RE='^[0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}$'
+MIG_PW_SET=0
+RELEASE_RE='^[0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}$'   # CI-built releases (the only ones retention may delete)
+ORIGINAL_RE='^[0-9]{8}-[0-9]{2}$'                         # the initially provisioned release (never deleted)
+VALID_RELEASE_RE="($RELEASE_RE)|($ORIGINAL_RE)"
 
 die() { echo "ll-release: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "must run as root (via sudo)"
+
+# The directories root writes into must be root-owned and not group/other writable (otherwise the app account could swap links).
+assert_root_only() {
+  [ -d "$1" ] && [ ! -L "$1" ] || die "missing or symlinked directory: $1"
+  [ "$(stat -c '%u' "$1")" = 0 ] || die "$1 is not root-owned"
+  perm=$(stat -c '%a' "$1"); [ $(( 8#$perm & 8#022 )) -eq 0 ] || die "$1 is group/other writable ($perm)"
+}
+assert_root_only "$ROOT"; assert_root_only "$REL"; assert_root_only "$ROOT/tools"
+[ -f "$PHP" ] && [ "$(stat -c '%u' "$PHP")" = 0 ] || die "php wrapper missing or not root-owned"
+
 exec 9>/run/ll-release.lock
 flock -n 9 || die "another release is running"
 
-reset_pw() { runuser -u postgres -- psql -X -q -d postgres -c "ALTER ROLE linklibrary_migrator PASSWORD NULL" >/dev/null 2>&1 || true; }
+# --- temporary migrator credential: ALWAYS reset (success, failure, signal); VALID UNTIL is a backstop for SIGKILL/power loss
+reset_pw() {
+  local i
+  for i in 1 2 3; do
+    runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -d postgres \
+      -c "ALTER ROLE linklibrary_migrator PASSWORD NULL VALID UNTIL 'infinity'" >/dev/null 2>&1 && { MIG_PW_SET=0; return 0; }
+    sleep 1
+  done
+  echo "CRITICAL: could not reset the linklibrary_migrator password; it expires on its own (VALID UNTIL). Run: ALTER ROLE linklibrary_migrator PASSWORD NULL;" >&2
+  return 1
+}
 on_exit() {
   rc=$?
-  rm -rf "$ROOT/current.new" "$STAGE"
-  if [ "$rc" -ne 0 ] && [ "$SWITCHED" = 0 ] && [ -n "$NEW" ] && [[ "$NEW" == "$REL"/* ]] && [[ "$(basename "$NEW")" =~ $RELEASE_RE ]] && [ -d "$NEW" ]; then
-    rm -rf "$NEW"   # a failed, never-activated release dir is discarded; current is untouched
+  trap '' INT TERM HUP
+  [ "$MIG_PW_SET" = 1 ] && { reset_pw || true; }
+  rm -rf "$STAGE"; rm -f "$ROOT/current.new"
+  if [ "$rc" -ne 0 ] && [ "$SWITCHED" = 0 ] && [ -n "$NEW" ] && [ "$(dirname "$NEW")" = "$REL" ] && [[ "$(basename "$NEW")" =~ $RELEASE_RE ]] && [ -d "$NEW" ] && [ ! -L "$NEW" ]; then
+    rm -rf --one-file-system "$NEW"   # a failed, never-activated release dir is discarded; current is untouched
   fi
   exit "$rc"
 }
 trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 smoke() {
   for u in linklibrary-api linklibrary-web linklibrary-queue linklibrary-scheduler.timer; do
@@ -54,29 +89,36 @@ smoke() {
   return 0
 }
 
-switch_to() { # atomic symlink switch
-  ln -sfn "$1" "$ROOT/current.new"
+switch_to() { # atomic symlink switch; target must be a real directory directly under releases/
+  local t=$1
+  [ "$(dirname "$t")" = "$REL" ] && [[ "$(basename "$t")" =~ $VALID_RELEASE_RE ]] && [ -d "$t" ] && [ ! -L "$t" ] || die "refusing to switch to $t"
+  rm -f "$ROOT/current.new"
+  ln -s "$t" "$ROOT/current.new"
   mv -T "$ROOT/current.new" "$ROOT/current"
 }
 restart_all() { systemctl restart linklibrary-api linklibrary-web linklibrary-queue; }
+current_release() { # resolved current release, validated
+  [ -L "$ROOT/current" ] || die "current is not a symlink"
+  local c; c=$(readlink -f "$ROOT/current")
+  [ "$(dirname "$c")" = "$REL" ] && [[ "$(basename "$c")" =~ $VALID_RELEASE_RE ]] && [ -d "$c" ] || die "current points to an unexpected location: $c"
+  echo "$c"
+}
 
 cmd=${1:-}
 case "$cmd" in
 rollback)
   [ $# -le 2 ] || die "too many arguments"
-  cur=$(readlink -f "$ROOT/current")
-  if [ -n "${2:-}" ]; then
-    [[ "$2" =~ ^[0-9A-Za-z._-]{3,80}$ ]] || die "bad release id"
-    target="$REL/$2"
-  else
-    target=$(cat "$SHARED/release-prev" 2>/dev/null) || die "no previous release recorded"
-  fi
-  [ -d "$target" ] && [[ "$(readlink -f "$target")" == "$REL"/* ]] || die "release not found"
-  [ "$(readlink -f "$target")" != "$cur" ] || die "already current"
+  cur=$(current_release)
+  if [ -n "${2:-}" ]; then name=$2; else name=$(basename "$(cat "$SHARED/release-prev" 2>/dev/null)") || die "no previous release recorded"; fi
+  [[ "$name" =~ $VALID_RELEASE_RE ]] || die "bad release id"
+  target=$REL/$name
+  [ -d "$target" ] && [ ! -L "$target" ] || die "release not found (or is a symlink)"
+  [ -f "$target/api/artisan" ] && [ -f "$target/web/package.json" ] || die "release is incomplete"
+  [ "$target" != "$cur" ] || die "already current"
   echo "$cur" > "$SHARED/release-prev"
-  switch_to "$(readlink -f "$target")"; restart_all
-  smoke || die "rollback smoke test FAILED (current=$target)"
-  echo "ROLLED_BACK_TO=$(basename "$target") (database schema is never rolled back)"
+  switch_to "$target"; restart_all
+  smoke || die "rollback smoke test FAILED (current=$name)"
+  echo "ROLLED_BACK_TO=$name (database schema is never rolled back)"
   exit 0 ;;
 deploy) [ $# -eq 4 ] || die "usage: deploy <api|web> <commit> <sha256>" ;;
 *) die "usage: deploy <api|web> <commit> <sha256> | rollback [id]" ;;
@@ -88,78 +130,129 @@ comp=$2; commit=$3; want_sha=$4
 [[ "$want_sha" =~ ^[0-9a-f]{64}$ ]] || die "bad sha256"
 pkg=$INC/$comp-$commit.tgz
 [ "$(df --output=avail -B1M "$ROOT" | tail -1)" -gt 1500 ] || die "less than 1.5 GB free"
+cur=$(current_release)
 
-# ---- 1. immutable artifact: copy into a ROOT-ONLY dir, then verify the digest of THAT copy (no TOCTOU with the CI-writable dir)
-install -d -m 700 -o root -g root "$STAGE"
-[ -f "$pkg" ] && [ ! -L "$pkg" ] || die "package not uploaded"
-timeout 120 cp -P --no-preserve=all "$pkg" "$STAGE/pkg.tgz"
-[ -f "$STAGE/pkg.tgz" ] && [ ! -L "$STAGE/pkg.tgz" ] || die "package is not a regular file"
-[ "$(sha256sum "$STAGE/pkg.tgz" | cut -d' ' -f1)" = "$want_sha" ] || die "sha256 does not match the digest CI computed"
-rm -f "$pkg"   # one-shot: a package can never be promoted twice or swapped afterwards
+# ---- 1. immutable artifact: ONE read (O_NOFOLLOW, regular file only, size cap) into a ROOT-ONLY dir, digest computed on that copy
+rm -rf "$STAGE"; install -d -m 700 -o root -g root "$STAGE"
+got_sha=$(python3 - "$pkg" "$STAGE/pkg.tgz" <<'PY'
+import os, sys, stat, hashlib
+src, dst, LIMIT = sys.argv[1], sys.argv[2], 400 * 1024 * 1024
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except OSError as e:
+    sys.exit("cannot open package: %s" % e.strerror)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_size > LIMIT:
+    sys.exit("package is not a regular file or is too large")
+h, n = hashlib.sha256(), 0
+with os.fdopen(os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as out, os.fdopen(fd, "rb") as f:
+    while True:
+        b = f.read(1 << 20)
+        if not b: break
+        n += len(b)
+        if n > LIMIT: sys.exit("package is too large")
+        h.update(b); out.write(b)
+print(h.hexdigest())
+PY
+) || die "package could not be staged"
+[ "$got_sha" = "$want_sha" ] || die "sha256 does not match the digest CI computed"
+rm -f "$pkg"   # one-shot: a package can never be promoted twice or swapped afterwards (unlink only, never follows)
 
-# ---- 2. structural validation BEFORE extraction (no abs paths, no .., no hard links/devices/fifos, no setuid, no escaping symlinks, size caps)
+# ---- 2. structural validation BEFORE extraction
 python3 - "$STAGE/pkg.tgz" <<'PY' || die "artifact failed validation"
 import sys, tarfile, posixpath
 MAX_FILES, MAX_BYTES = 300000, 3 * 1024**3
 def fail(m): sys.exit("invalid artifact: " + m)
 n = tot = 0
+seen, links = set(), set()
+def under_link(p):  # does any ancestor of p (or p itself) name a symlink member?
+    parts = p.split("/")
+    return any("/".join(parts[:i]) in links for i in range(1, len(parts) + 1))
 with tarfile.open(sys.argv[1], "r:gz") as t:
     for m in t:
         n += 1; tot += m.size
         if n > MAX_FILES or tot > MAX_BYTES: fail("too large")
         name = m.name
         if name.startswith("/") or "\x00" in name: fail("absolute or NUL name " + name)
-        if ".." in posixpath.normpath(name).split("/"): fail("path traversal " + name)
+        norm = posixpath.normpath(name)
+        if norm == ".." or norm.startswith("../") or ".." in norm.split("/"): fail("path traversal " + name)
+        if norm != "." :
+            if norm in seen: fail("duplicate member " + name)
+            seen.add(norm)
+            if under_link(posixpath.dirname(norm)): fail("member located beneath a symlink " + name)
         if m.mode & 0o7000: fail("setuid/setgid/sticky bit " + name)
         if m.isdir() or m.isreg(): continue
         if m.issym():
             tgt = m.linkname
-            if tgt.startswith("/"): fail("absolute symlink " + name)
-            r = posixpath.normpath(posixpath.join(posixpath.dirname(name), tgt))
+            if not tgt or tgt.startswith("/"): fail("absolute or empty symlink " + name)
+            segs = tgt.split("/")
+            i = 0
+            while i < len(segs) and segs[i] == "..": i += 1
+            if ".." in segs[i:]: fail("symlink with '..' after a path segment " + name)
+            r = posixpath.normpath(posixpath.join(posixpath.dirname(norm), tgt))
             if r == ".." or r.startswith("../") or r.startswith("/"): fail("symlink escapes " + name)
+            if r != "." and under_link(r): fail("symlink chain through another symlink " + name)
+            links.add(norm)
             continue
         fail("unsupported member type (hard link/device/fifo) " + name)
 PY
 
-cur=$(readlink -f "$ROOT/current")
-[[ "$cur" == "$REL"/* ]] || die "current symlink is unexpected"
 NEW=$REL/$TS-$comp-${commit:0:7}
 [[ "$(basename "$NEW")" =~ $RELEASE_RE ]] || die "internal: bad release name"
-[ ! -e "$NEW" ] || die "release exists"
+[ ! -e "$NEW" ] && [ ! -L "$NEW" ] || die "release exists"
 
 echo "== new release $(basename "$NEW") from $(basename "$cur") (+ $comp @ ${commit:0:7})"
-cp -a "$cur" "$NEW"
-rm -rf "${NEW:?}/$comp"; mkdir "$NEW/$comp"
+install -d -m 755 -o root -g linklibrary "$NEW"
+cp -a "$cur/." "$NEW/"
+# the only app-writable dirs are never copied: they are recreated empty below
+rm -rf --one-file-system "$NEW/api/bootstrap/cache" "$NEW/web/.next/cache"
+rm -rf --one-file-system "${NEW:?}/$comp"; install -d -m 755 "$NEW/$comp"
 tar --no-same-owner --no-same-permissions --no-overwrite-dir -xzf "$STAGE/pkg.tgz" -C "$NEW/$comp"
 rm -rf "$STAGE"
-# belt and braces after extraction: real (resolved) symlink targets, special files, setuid
+
+# belt and braces after extraction, on the REAL (resolved) targets: every symlink of the new component stays inside it
 while IFS= read -r -d '' l; do
-  t=$(readlink -m "$l"); [[ "$t" == "$NEW"/* ]] || die "symlink escapes release: ${l#$NEW/}"
+  t=$(readlink -m "$l"); [[ "$t" == "$NEW/$comp"/* ]] || die "symlink escapes component: ${l#$NEW/}"
 done < <(find "$NEW/$comp" -type l -print0)
 [ -z "$(find "$NEW/$comp" \( -perm /7000 -o \( ! -type f -a ! -type d -a ! -type l \) \) -print -quit)" ] || die "special file or setuid bit in release"
 
+# link shared state; the OTHER (copied) component may only contain links into this release or the known shared files
 if [ "$comp" = api ]; then
-  rm -rf "$NEW/api/storage" "$NEW/api/.env"
+  rm -rf --one-file-system "$NEW/api/storage" "$NEW/api/.env" "$NEW/api/public/storage"
   ln -s "$SHARED/storage" "$NEW/api/storage"; ln -s "$SHARED/api.env" "$NEW/api/.env"
-  mkdir -p "$NEW/api/resources/views" "$NEW/api/bootstrap/cache"
+  install -d -m 755 "$NEW/api/resources/views"
 else
   rm -f "$NEW/web/.env.production"; ln -s "$SHARED/web.env" "$NEW/web/.env.production"
+  rm -f "$NEW/api/public/storage"
 fi
-chown -R -h linklibrary:linklibrary "$NEW"
+install -d -m 755 "$NEW/api/public"
+ln -s "$SHARED/storage/app/public" "$NEW/api/public/storage"
+while IFS= read -r -d '' l; do
+  t=$(readlink -m "$l")
+  case "$t" in "$NEW"/*|"$SHARED/storage"|"$SHARED/storage/app/public"|"$SHARED/api.env"|"$SHARED/web.env") ;; *) die "unexpected symlink target in release: ${l#$NEW/} -> $t" ;; esac
+done < <(find "$NEW" -type l -print0)
 
-run_app() { (cd "$NEW/api" && runuser -u linklibrary -- "$PHP" "$@"); }
+# root-owned, group-readable, never writable by the app account (done while nothing but root can touch NEW)
+chown -R -h root:linklibrary "$NEW"
+chmod -R go-w "$NEW"
+install -d -m 2770 -o linklibrary -g linklibrary "$NEW/api/bootstrap/cache" "$NEW/web/.next/cache"
+
+run_app() { (umask 027; cd "$NEW/api" && runuser -u linklibrary -- "$PHP" "$@"); }
 
 if [ "$comp" = api ]; then
   echo "== backup (required before any schema change)"
   start=$(date +%s)
   systemctl start linklibrary-backup
-  newest=$(ls -t /var/backups/linklibrary/*.dump 2>/dev/null | head -1)
-  [ -n "$newest" ] && [ "$(stat -c %Y "$newest")" -ge "$start" ] || die "no fresh backup; aborting before migration"
+  fresh=$(find /var/backups/linklibrary -maxdepth 1 -type f -name '????????T??????Z.dump' -newermt "@$((start - 1))" -print -quit 2>/dev/null || true)
+  [ -n "$fresh" ] || die "no fresh backup; aborting before migration"
 
-  echo "== forward-only migration as linklibrary_migrator (temporary credential, reset afterwards)"
+  echo "== forward-only migration as linklibrary_migrator (temporary credential, always reset)"
   mpw=$(openssl rand -hex 24)
-  printf "ALTER ROLE linklibrary_migrator PASSWORD '%s'\n" "$mpw" | runuser -u postgres -- psql -X -q -d postgres >/dev/null
-  mig() { (cd "$NEW/api" && runuser -u linklibrary -- env DB_USERNAME=linklibrary_migrator DB_PASSWORD="$mpw" "$PHP" "$@"); }
+  until_ts=$(date -u -d '+30 minutes' '+%Y-%m-%d %H:%M:%S+00')
+  MIG_PW_SET=1   # set BEFORE the credential exists so every exit path resets it
+  printf "ALTER ROLE linklibrary_migrator PASSWORD '%s' VALID UNTIL '%s'\n" "$mpw" "$until_ts" | runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -d postgres >/dev/null
+  # credentials travel in the environment of the command, never in argv (argv is world-readable in /proc)
+  mig() { (umask 027; cd "$NEW/api" && DB_USERNAME=linklibrary_migrator DB_PASSWORD="$mpw" runuser -u linklibrary -- "$PHP" "$@"); }
   mig -r 'require "vendor/autoload.php"; $a=require "bootstrap/app.php"; $a->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); $r=Illuminate\Support\Facades\DB::selectOne("select current_database() db,current_user usr"); if($r->db!=="linklibrary_prod"||$r->usr!=="linklibrary_owner"){fwrite(STDERR,"wrong migration target\n");exit(1);} echo "target ok\n";'
   mig artisan migrate --force --no-interaction
   reset_pw; mpw=
@@ -167,18 +260,10 @@ fi
 
 # caches are path-specific: ALWAYS rebuilt for the new release dir (also when only web changed and api was copied)
 echo "== cache config/routes/views for the new release path"
-rm -f "$NEW"/api/bootstrap/cache/{config,routes-*,events}.php 2>/dev/null || true
-rm -f "$NEW/api/public/storage"
-run_app artisan storage:link --no-interaction
 for c in config:cache route:cache view:cache; do run_app artisan "$c" --no-interaction; done
+# Root performs no chmod/chown/follow inside the app-writable cache dirs; only verify they contain plain files.
+[ -z "$(find "$NEW/api/bootstrap/cache" ! -type f ! -type d -print -quit)" ] || die "unexpected non-regular entry in bootstrap/cache"
 
-echo "== harden ownership (code root-owned, only caches writable)"
-chown -R -h root:linklibrary "$NEW/api" "$NEW/web"
-chown -h root:linklibrary "$NEW"/api/.env "$NEW"/web/.env.production 2>/dev/null || true
-chown -R -h linklibrary:linklibrary "$NEW/api/bootstrap/cache"; chmod 2770 "$NEW/api/bootstrap/cache"
-find "$NEW/api/bootstrap/cache" -type f -exec chmod 640 {} +
-install -d -m 750 -o linklibrary -g linklibrary "$NEW/web/.next/cache"
-chown -R -h linklibrary:linklibrary "$NEW/web/.next/cache"
 if [ "$comp" = web ]; then
   python3 - "$NEW" <<'PY'
 import sys,pathlib
@@ -201,10 +286,12 @@ if ! smoke; then
   exit 1
 fi
 
-# retention: keep the 3 newest CI-built releases (+ current, previous); the original release has a different name and is never deleted
-keep=$(readlink -f "$ROOT/current"); prev=$(cat "$SHARED/release-prev")
-ls -1d "$REL"/*-*-api-* "$REL"/*-*-web-* 2>/dev/null | sort -r | tail -n +4 | while read -r d; do
-  [[ "$(basename "$d")" =~ $RELEASE_RE ]] && [ ! -L "$d" ] || continue
-  [ "$d" = "$keep" ] || [ "$d" = "$prev" ] || rm -rf "$d"
+# retention: keep the 3 newest CI-built releases (+ current, previous); the original release never matches RELEASE_RE
+keep=$(readlink -f "$ROOT/current"); prev=$(readlink -f "$(cat "$SHARED/release-prev")" 2>/dev/null || true)
+mapfile -t old < <(find "$REL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -E "$RELEASE_RE" | sort -r | tail -n +4)
+for n in "${old[@]}"; do
+  d=$REL/$n
+  [[ "$n" =~ $RELEASE_RE ]] && [ "$(dirname "$d")" = "$REL" ] && [ -d "$d" ] && [ ! -L "$d" ] || continue
+  [ "$d" = "$keep" ] || [ "$d" = "$prev" ] || rm -rf --one-file-system "$d"
 done
 echo "DEPLOYED=$(basename "$NEW") component=$comp commit=$commit"

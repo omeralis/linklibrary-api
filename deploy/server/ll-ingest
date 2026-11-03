@@ -24,7 +24,7 @@ deploy)
   [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo "bad args" >&2; exit 2; }
   exec sudo -n /srv/linklibrary/tools/ll-release deploy "$a" "$b" "$c" ;;
 rollback)
-  if [ -n "${a:-}" ]; then [[ "$a" =~ ^[0-9A-Za-z._-]{3,80}$ ]] || { echo "bad id" >&2; exit 2; }; fi
+  if [ -n "${a:-}" ]; then [[ "$a" =~ ^([0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}|[0-9]{8}-[0-9]{2})$ ]] || { echo "bad id" >&2; exit 2; }; fi
   exec sudo -n /srv/linklibrary/tools/ll-release rollback ${a:+"$a"} ;;
 status)
   readlink -f /srv/linklibrary/current; ls -1t /srv/linklibrary/releases | head -6 ;;
