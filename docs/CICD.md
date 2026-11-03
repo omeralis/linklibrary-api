@@ -57,6 +57,23 @@ Prerequisite checks before enabling: `/srv/linklibrary/shared/release-prev` is c
 `ALTER ROLE ... PASSWORD` only by postgres (the script uses `runuser -u postgres`); the existing release must have `api/.env` and
 `api/storage` as symlinks to `shared/` (as provisioned).
 
+## Server preflight (read-only, before the setup commands)
+```
+sudo sshd -T | grep -i -E '^(allowusers|allowgroups|denyusers|passwordauthentication|authorizedkeysfile)'   # if AllowUsers/AllowGroups is set, llci must be added or login fails
+id llci 2>&1                                   # must NOT exist yet
+ls -ld /srv/linklibrary /srv/linklibrary/tools /srv/linklibrary/shared /srv/linklibrary/releases
+readlink -f /srv/linklibrary/current           # expected: /srv/linklibrary/releases/20261102-01
+ls -l /srv/linklibrary/current/api/.env /srv/linklibrary/current/api/storage /srv/linklibrary/current/web/.env.production   # symlinks into shared/
+sudo -u postgres psql -Atc "select rolname,rolcanlogin,rolconfig from pg_roles where rolname like 'linklibrary%'"   # migrator: role=linklibrary_owner
+df -h /srv /var/backups; free -m
+```
+
+## GitHub settings (cannot be verified from code)
+- Settings -> Environments -> `production`: Deployment branches = Selected branches -> `main` only; add yourself as required reviewer; put the two SSH secrets
+  in the ENVIRONMENT (not repository) secrets, so no other branch or workflow can read them.
+- Branch protection on `main`: require PR + passing `CI`, block force-push and deletion.
+- Actions -> General: Workflow permissions = Read repository contents; do not allow Actions to approve PRs.
+
 ## Activation checklist
 1. Review and commit these files with normal commits (no history rewrite) and push to `main`; confirm the CI jobs pass.
 2. Do the server setup above; test `ssh -i key llci@HOST status` (must only print the release list) and `ssh ... "id"` (must be denied).

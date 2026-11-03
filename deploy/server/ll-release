@@ -49,7 +49,9 @@ smoke() {
     code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 --connect-to 31.172.87.248:8080:127.0.0.1:8080 "https://31.172.87.248:8080/$l")
     [ "$code" = 200 ] || { echo "/$l -> $code"; return 1; }
   done
-  "$ROOT/tools/health.sh" >/dev/null
+  # health.sh also fails on ANY failed job / stale queue / near-expiry cert; that must warn, not roll back a good release
+  "$ROOT/tools/health.sh" >/dev/null || echo "WARNING: health.sh reported a problem (failed or stuck jobs, scheduler heartbeat, certificate) - inspect, release not rolled back"
+  return 0
 }
 
 switch_to() { # atomic symlink switch
@@ -175,7 +177,8 @@ chown -R -h root:linklibrary "$NEW/api" "$NEW/web"
 chown -h root:linklibrary "$NEW"/api/.env "$NEW"/web/.env.production 2>/dev/null || true
 chown -R -h linklibrary:linklibrary "$NEW/api/bootstrap/cache"; chmod 2770 "$NEW/api/bootstrap/cache"
 find "$NEW/api/bootstrap/cache" -type f -exec chmod 640 {} +
-[ -d "$NEW/web/.next/cache" ] && chown -R -h linklibrary:linklibrary "$NEW/web/.next/cache" || true
+install -d -m 750 -o linklibrary -g linklibrary "$NEW/web/.next/cache"
+chown -R -h linklibrary:linklibrary "$NEW/web/.next/cache"
 if [ "$comp" = web ]; then
   python3 - "$NEW" <<'PY'
 import sys,pathlib
