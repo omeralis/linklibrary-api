@@ -3837,6 +3837,17 @@ components:
           type: string
         ai_enabled:
           type: boolean
+        ai_wait:
+          description: 'Set while the free AI quota is exhausted; AI suggestions resume automatically at retry_at.'
+          type:
+            - object
+            - 'null'
+          properties:
+            code:
+              type: string
+            retry_at:
+              type: string
+              format: date-time
     PublicSavedLink:
       type: object
       properties:

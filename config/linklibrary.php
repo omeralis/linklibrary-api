@@ -94,12 +94,17 @@ return [
     ],
 
     'ai' => [
-        // anthropic | openai | null
+        // gemini | openai (also Groq via OPENAI_ENDPOINT) | anthropic | null. Exactly one provider: there is no
+        // fallback chain and no automatic switch to a paid provider.
         'provider' => env('AI_PROVIDER', 'null'),
         'timeout' => (float) env('AI_TIMEOUT', 30),
         'max_input_chars' => (int) env('AI_MAX_INPUT_CHARS', 8000),
         'max_output_tokens' => (int) env('AI_MAX_OUTPUT_TOKENS', 1200),
-        'daily_request_limit' => (int) env('AI_DAILY_REQUEST_LIMIT', 1000),
+        // Free-tier guards, enforced locally before any request is sent (0 disables a guard — do not in production).
+        'requests_per_minute' => (int) env('AI_REQUESTS_PER_MINUTE', 8),
+        'daily_request_limit' => (int) env('AI_DAILY_REQUEST_LIMIT', 300),
+        // The provider's quota day rolls over at midnight in this zone (Gemini: America/Los_Angeles).
+        'quota_timezone' => env('AI_QUOTA_TIMEZONE', 'America/Los_Angeles'),
         'max_attempts' => (int) env('AI_MAX_ATTEMPTS', 3),
         'anthropic' => [
             'api_key' => env('ANTHROPIC_API_KEY'),
@@ -107,10 +112,18 @@ return [
             'endpoint' => env('ANTHROPIC_ENDPOINT', 'https://api.anthropic.com/v1/messages'),
             'version' => env('ANTHROPIC_VERSION', '2023-06-01'),
         ],
+        'gemini' => [
+            'api_key' => env('GEMINI_API_KEY'),
+            'model' => env('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
+            'endpoint' => env('GEMINI_ENDPOINT', 'https://generativelanguage.googleapis.com/v1beta'),
+            // Free-tier content may be used by Google to improve its products and reviewed by humans, and EEA/UK/CH
+            // clients require Paid Services. AI stays off until the owner confirms this is acceptable.
+            'free_tier_acknowledged' => (bool) env('AI_GEMINI_FREE_TIER_ACKNOWLEDGED', false),
+        ],
         'openai' => [
             'api_key' => env('OPENAI_API_KEY'),
             'model' => env('OPENAI_MODEL', 'gpt-4o-mini'),
-            // Any OpenAI-compatible chat completions endpoint (OpenAI, Azure-compatible gateways, Ollama...).
+            // Any OpenAI-compatible chat completions endpoint (OpenAI, Groq, Azure-compatible gateways). Never point it at a self-hosted LLM on the small production VPS..
             'endpoint' => env('OPENAI_ENDPOINT', 'https://api.openai.com/v1/chat/completions'),
         ],
     ],

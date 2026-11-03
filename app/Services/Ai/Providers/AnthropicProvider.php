@@ -5,6 +5,7 @@ namespace App\Services\Ai\Providers;
 use App\Services\Ai\AiException;
 use App\Services\Ai\AiInput;
 use App\Services\Ai\AiProvider;
+use App\Services\Ai\AiQuotaException;
 use App\Services\Ai\PromptBuilder;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
@@ -61,7 +62,11 @@ class AnthropicProvider implements AiProvider
             throw new AiException('PROVIDER_UNREACHABLE', true);
         }
 
-        if ($response->status() === 429 || $response->serverError()) {
+        if ($response->status() === 429) {
+            $after = $response->header('Retry-After');
+            throw new AiQuotaException(is_numeric($after) ? (int) $after : null, is_numeric($after) && (int) $after > 3600);
+        }
+        if ($response->serverError()) {
             throw new AiException('PROVIDER_HTTP_'.$response->status(), true);
         }
         if (! $response->successful()) {

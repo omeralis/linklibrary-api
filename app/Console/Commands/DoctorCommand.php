@@ -72,6 +72,11 @@ class DoctorCommand extends Command
         $this->section('Mail');
         $mailer = (string) config('mail.default');
         $this->ok("MAIL_MAILER={$mailer}, from=".config('mail.from.address'));
+        $fromHost = strtolower((string) substr(strrchr((string) config('mail.from.address'), '@') ?: '', 1));
+        if (app()->isProduction()) {
+            $this->check(! in_array($mailer, ['log', 'array'], true), 'production mailer delivers e-mail', "MAIL_MAILER={$mailer} in production: verification, reset and invitation e-mails would never be delivered", fail: true);
+            $this->check($fromHost !== '' && ! in_array($fromHost, ['example.com', 'example.org'], true), "sender domain {$fromHost}", 'MAIL_FROM_ADDRESS still uses a placeholder domain; use a domain you own with SPF + DKIM (+ DMARC) records', fail: true);
+        }
         if (in_array($mailer, ['log', 'array'], true)) {
             $this->warn_("mail is not delivered ({$mailer}); verification/reset/invitation links are only written to the log. Use Mailpit/SMTP to test e-mail flows.");
         }
@@ -104,7 +109,7 @@ class DoctorCommand extends Command
         $this->section('AI (optional)');
         $ai = app(AiProvider::class);
         $ai->isConfigured()
-            ? $this->ok("AI provider {$ai->name()} ({$ai->model()})")
+            ? $this->ok("AI provider {$ai->name()} ({$ai->model()}); limits: ".config('linklibrary.ai.requests_per_minute').'/min, '.config('linklibrary.ai.daily_request_limit').'/day (quota day: '.config('linklibrary.ai.quota_timezone').')')
             : $this->line('  - AI disabled (AI_PROVIDER=null) — app fully functional without AI');
 
         $this->section('Frontend / cookies');

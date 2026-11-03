@@ -1,8 +1,13 @@
 # AI processing and privacy
 
-AI enrichment is **optional** (`AI_PROVIDER=null` disables it). Supported adapters: Anthropic Messages API
-(`AI_PROVIDER=anthropic`) and any OpenAI-compatible Chat Completions endpoint (`AI_PROVIDER=openai`,
-`OPENAI_ENDPOINT` may point at OpenAI or a self-hosted/compatible gateway).
+AI enrichment is **optional** (`AI_PROVIDER=null` disables it). Supported adapters: Google Gemini
+(`AI_PROVIDER=gemini`, free tier, recommended), Anthropic Messages API (`AI_PROVIDER=anthropic`) and any
+OpenAI-compatible Chat Completions endpoint (`AI_PROVIDER=openai`, e.g. Groq). No local LLM is used on the
+production VPS. See `docs/AI_INTEGRATION_PLAN.md` for the free-tier terms, limits and setup steps.
+
+**Gemini free tier:** Google may use submitted content to improve its products and human reviewers may read it, so
+only the public data listed below is sent, and the public disclosure must say so. The provider stays off until
+`AI_GEMINI_FREE_TIER_ACKNOWLEDGED=true`.
 
 ## What is sent
 
@@ -24,8 +29,9 @@ URL and shared between all users who saved it, so it cannot depend on any one us
 - AI output is labelled (`ai.generated = true`) and never overrides user input
   (precedence: user override > extracted metadata > AI suggestion > fallback).
 - AI can flag a page as *suspicious* (escalating its security status) but can never mark anything safe.
-- Cost controls: daily request cap (`AI_DAILY_REQUEST_LIMIT`), input/output token limits, timeouts,
-  retries with backoff, and skipping re-analysis when the input is unchanged.
+- Cost controls: requests-per-minute and daily caps (`AI_REQUESTS_PER_MINUTE`, `AI_DAILY_REQUEST_LIMIT`), one request
+  in flight, input/output token limits, timeouts, retries with backoff, and skipping re-analysis when the input is
+  unchanged. When the free quota is exhausted the analysis waits for the quota reset; there is no paid fallback.
 
 ## Suggested disclosure text (configure `BRAND_AI_DISCLOSURE_URL`)
 

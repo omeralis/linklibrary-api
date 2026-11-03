@@ -11,7 +11,7 @@ use App\Models\SavedLink;
 use App\Services\Links\TagService;
 use App\Services\Search\SearchIndexer;
 use App\Services\Security\SecurityScanService;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -32,7 +32,7 @@ class AiService
         private readonly TagService $tags,
         private readonly SearchIndexer $indexer,
         private readonly SecurityScanService $security,
-        private readonly int $dailyLimit,
+        private readonly AiQuotaGuard $quota,
         private readonly int $maxInputChars,
     ) {}
 
@@ -42,7 +42,7 @@ class AiService
     }
 
     /**
-     * @return array{status: AiStatus, retryable: bool, error_code: ?string}
+     * @return array{status: AiStatus, retryable: bool, error_code: ?string, retry_at?: Carbon}
      */
     public function analyze(Link $link, int $version): array
     {
@@ -79,10 +79,11 @@ class AiService
             return ['status' => AiStatus::COMPLETED, 'retryable' => false, 'error_code' => null];
         }
 
-        if (! $this->withinBudget()) {
-            $this->setStatus($link, $version, AiStatus::SKIPPED);
-
-            return ['status' => AiStatus::SKIPPED, 'retryable' => false, 'error_code' => 'BUDGET_EXCEEDED'];
+        // Free-tier protection: when the local budget (rpm / daily cap) or a provider 429 says "not now", the
+        // link stays PENDING and the job is re-scheduled for the moment the quota resets. Nothing is skipped
+        // permanently and no other (paid) provider is tried.
+        if (($retryAt = $this->quota->reserve()) !== null) {
+            return $this->waitForQuota($retryAt);
         }
 
         Link::query()->whereKey($link->id)->where('ai_version', $version)->update(['ai_status' => AiStatus::PROCESSING->value]);
@@ -97,8 +98,21 @@ class AiService
         ]);
 
         try {
-            $raw = $this->provider->analyze($input);
+            [$ran, $raw] = $this->quota->exclusive(fn () => $this->provider->analyze($input));
+            if (! $ran) {
+                // Another AI request is in flight (concurrency limit 1): try again shortly, without using an attempt.
+                $analysis->delete();
+                $this->setStatus($link, $version, AiStatus::PENDING);
+
+                return $this->waitForQuota($raw, 'AI_BUSY');
+            }
             $result = $this->validator->validate($raw['data'], $input->allowedCategories, $raw['input_tokens'], $raw['output_tokens']);
+        } catch (AiQuotaException $e) {
+            $retryAt = $this->quota->markExhausted($e);
+            $analysis->delete();
+            $this->setStatus($link, $version, AiStatus::PENDING);
+
+            return $this->waitForQuota($retryAt);
         } catch (AiException $e) {
             $analysis->update(['status' => 'FAILED', 'error_code' => $e->errorCode, 'completed_at' => now()]);
             if (! $e->retryable) {
@@ -197,15 +211,9 @@ class AiService
         Link::query()->whereKey($link->id)->where('ai_version', $version)->update(['ai_status' => $status->value, 'updated_at' => now()]);
     }
 
-    private function withinBudget(): bool
+    /** @return array{status: AiStatus, retryable: bool, error_code: string, retry_at: Carbon} */
+    private function waitForQuota(Carbon $retryAt, string $code = AiQuotaException::CODE): array
     {
-        if ($this->dailyLimit <= 0) {
-            return true;
-        }
-        $key = 'ai:requests:'.now()->format('Ymd');
-        Cache::add($key, 0, now()->endOfDay());
-        $count = (int) Cache::increment($key);
-
-        return $count <= $this->dailyLimit;
+        return ['status' => AiStatus::PENDING, 'retryable' => true, 'error_code' => $code, 'retry_at' => $retryAt];
     }
 }

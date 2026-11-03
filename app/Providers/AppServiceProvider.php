@@ -5,9 +5,11 @@ namespace App\Providers;
 use App\Models\User;
 use App\Services\Ai\AiOutputValidator;
 use App\Services\Ai\AiProvider;
+use App\Services\Ai\AiQuotaGuard;
 use App\Services\Ai\AiService;
 use App\Services\Ai\PromptBuilder;
 use App\Services\Ai\Providers\AnthropicProvider;
+use App\Services\Ai\Providers\GeminiProvider;
 use App\Services\Ai\Providers\NullAiProvider;
 use App\Services\Ai\Providers\OpenAiCompatibleProvider;
 use App\Services\Extraction\ExtractionService;
@@ -119,9 +121,17 @@ class AppServiceProvider extends ServiceProvider
             return match ($ai['provider'] ?? 'null') {
                 'anthropic' => new AnthropicProvider((array) $ai['anthropic'], ...$args),
                 'openai' => new OpenAiCompatibleProvider((array) $ai['openai'], ...$args),
+                'gemini' => new GeminiProvider((array) $ai['gemini'], ...$args),
                 default => new NullAiProvider,
             };
         });
+
+        $this->app->singleton(AiQuotaGuard::class, fn () => new AiQuotaGuard(
+            (int) config('linklibrary.ai.requests_per_minute'),
+            (int) config('linklibrary.ai.daily_request_limit'),
+            (string) config('linklibrary.ai.quota_timezone'),
+            (int) ceil((float) config('linklibrary.ai.timeout')) + 15,
+        ));
 
         $this->app->bind(AiService::class, fn ($app) => new AiService(
             $app->make(AiProvider::class),
@@ -129,7 +139,7 @@ class AppServiceProvider extends ServiceProvider
             $app->make(TagService::class),
             $app->make(SearchIndexer::class),
             $app->make(SecurityScanService::class),
-            (int) config('linklibrary.ai.daily_request_limit'),
+            $app->make(AiQuotaGuard::class),
             (int) config('linklibrary.ai.max_input_chars'),
         ));
     }

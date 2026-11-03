@@ -8,12 +8,14 @@ use App\Enums\ProcessingStatus;
 use App\Enums\SecurityStatus;
 use App\Models\Link;
 use App\Models\SavedLink;
+use App\Services\Ai\AiQuotaGuard;
 use App\Services\Ai\AiService;
 use App\Services\Security\SecurityPolicy;
 use App\Services\Sharing\LinkViewContext;
 use App\Support\FrontendUrl;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Carbon;
 
 /**
  * Context-aware representation of a saved link.
@@ -162,6 +164,8 @@ class SavedLinkResource extends JsonResource
     /** @return array<string, mixed> */
     public static function processing(Link $link): array
     {
+        $wait = self::aiQuotaWait($link);
+
         return [
             'status' => self::processingStatus($link)->value,
             'security' => $link->effectiveSecurityStatus()->value,
@@ -169,7 +173,18 @@ class SavedLinkResource extends JsonResource
             'extraction_error_code' => $link->extraction_error_code,
             'ai' => $link->ai_status->value,
             'ai_enabled' => app(AiService::class)->isEnabled(),
+            // Free AI quota exhausted: AI suggestions are queued and resume automatically at `retry_at`.
+            'ai_wait' => $wait === null ? null : ['code' => 'AI_QUOTA_EXHAUSTED', 'retry_at' => $wait->toIso8601String()],
         ];
+    }
+
+    private static function aiQuotaWait(Link $link): ?Carbon
+    {
+        if ($link->ai_status !== AiStatus::PENDING || ! app(AiService::class)->isEnabled()) {
+            return null;
+        }
+
+        return app(AiQuotaGuard::class)->unavailableUntil();
     }
 
     /** Aggregate state derived from the security, extraction and AI pipelines. */
@@ -188,7 +203,7 @@ class SavedLinkResource extends JsonResource
             ExtractionStatus::PROCESSING => ProcessingStatus::PROCESSING,
             ExtractionStatus::FAILED => ProcessingStatus::FAILED,
             ExtractionStatus::BLOCKED => ProcessingStatus::BLOCKED,
-            ExtractionStatus::PARTIAL, ExtractionStatus::COMPLETED => in_array($link->ai_status, [AiStatus::PENDING, AiStatus::PROCESSING], true) && app(AiService::class)->isEnabled()
+            ExtractionStatus::PARTIAL, ExtractionStatus::COMPLETED => in_array($link->ai_status, [AiStatus::PENDING, AiStatus::PROCESSING], true) && app(AiService::class)->isEnabled() && self::aiQuotaWait($link) === null
                 ? ProcessingStatus::PROCESSING
                 : ($link->extraction_status === ExtractionStatus::COMPLETED ? ProcessingStatus::COMPLETED : ProcessingStatus::PARTIAL),
         };

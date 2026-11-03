@@ -13,10 +13,13 @@ use App\Models\User;
 use App\Notifications\LinkProcessingFailedNotification;
 use App\Notifications\SecurityWarningNotification;
 use App\Services\Ai\AiException;
+use App\Services\Ai\AiQuotaException;
+use App\Services\Ai\AiQuotaGuard;
 use App\Services\Extraction\ExtractionService;
 use App\Services\Http\FetchException;
 use App\Services\Security\SecurityPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Notification;
 use Tests\Support\FakeAiProvider;
 use Tests\TestCase;
@@ -278,6 +281,59 @@ class PipelineTest extends TestCase
         $job = (new AnalyzeLinkWithAiJob($link->id, $link->ai_version))->withFakeQueueInteractions();
         app()->call([$job, 'handle']);
         $job->assertReleased(30);
+    }
+
+    public function test_provider_quota_exhaustion_waits_for_reset_without_failing_or_using_attempts(): void
+    {
+        Carbon::setTestNow('2026-11-03 18:00:00');
+        $this->useAiProvider(new FakeAiProvider(new AiQuotaException(null, daily: true)));
+        $this->transport->html('https://blog.example.com/quota', self::ARTICLE);
+
+        $saved = $this->save(User::factory()->create(), 'https://blog.example.com/quota');
+        $link = $saved->link->fresh();
+
+        // Link management is unaffected; AI stays PENDING (not FAILED/SKIPPED) and the UI gets a friendly wait notice.
+        $this->assertSame(AiStatus::PENDING, $link->ai_status);
+        $this->assertDatabaseMissing('link_ai_analyses', ['link_id' => $link->id, 'status' => 'FAILED']);
+        $this->getJson("/api/v1/links/{$saved->public_id}")
+            ->assertOk()
+            ->assertJsonPath('data.processing.ai_wait.code', 'AI_QUOTA_EXHAUSTED')
+            ->assertJsonPath('data.processing.ai_wait.retry_at', '2026-11-04T08:02:00+00:00')
+            ->assertJsonPath('data.processing_status', 'COMPLETED');
+
+        // A later job run before the reset does not call the provider at all and is released until the reset.
+        $provider = new FakeAiProvider;
+        $this->useAiProvider($provider);
+        $job = (new AnalyzeLinkWithAiJob($link->id, $link->ai_version))->withFakeQueueInteractions();
+        app()->call([$job, 'handle']);
+        $this->assertCount(0, $provider->inputs);
+        $job->assertReleased(50520); // 14 h 02 min until 08:02 UTC
+
+        // After the reset the same link is analysed.
+        Carbon::setTestNow('2026-11-04 08:03:00');
+        $job = (new AnalyzeLinkWithAiJob($link->id, $link->ai_version))->withFakeQueueInteractions();
+        app()->call([$job, 'handle']);
+        $this->assertCount(1, $provider->inputs);
+        $this->assertSame(AiStatus::COMPLETED, $link->fresh()->ai_status);
+        Carbon::setTestNow();
+    }
+
+    public function test_local_daily_cap_defers_instead_of_skipping(): void
+    {
+        config(['linklibrary.ai.daily_request_limit' => 1]);
+        app()->forgetInstance(AiQuotaGuard::class);
+        $provider = new FakeAiProvider;
+        $this->useAiProvider($provider);
+        $this->transport->html('https://blog.example.com/one', self::ARTICLE);
+        $this->transport->html('https://blog.example.com/two', self::ARTICLE);
+
+        $user = User::factory()->create();
+        $first = $this->save($user, 'https://blog.example.com/one');
+        $second = $this->save($user, 'https://blog.example.com/two');
+
+        $this->assertSame(AiStatus::COMPLETED, $first->link->fresh()->ai_status);
+        $this->assertSame(AiStatus::PENDING, $second->link->fresh()->ai_status);
+        $this->assertCount(1, $provider->inputs);
     }
 
     public function test_prompt_injection_cannot_mark_links_safe_or_pick_arbitrary_categories(): void
