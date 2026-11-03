@@ -134,3 +134,14 @@ appeals (`link_security_appeals`, admin review) are all recorded and audited.
   restrictive CSP, HSTS on HTTPS, `Cache-Control: no-store, private` for authenticated responses.
 - Production errors never include stack traces (`APP_DEBUG=false`).
 - CORS: credentials allowed only for `CORS_ALLOWED_ORIGINS` (never `*`).
+
+## Temporary policy: security scanning "Coming Soon" + unverified sharing (2026-11-03)
+
+Two reversible flags in `config/linklibrary.php` (`security.*`), set in the deployment's environment:
+
+| Flag | Effect when `true` |
+|---|---|
+| `SECURITY_SCANNING_COMING_SOON` | Manual rescan returns `422 SECURITY_SCANNING_COMING_SOON`; the UI shows "الفحص الأمني — قريبًا" / "Security Scanning — Coming Soon". The scanning architecture (jobs, providers, scan/appeal records, scheduled rescans) is untouched and keeps running. |
+| `SECURITY_ALLOW_UNVERIFIED_SHARING` | The owner may publish and privately share links whose effective status is **UNKNOWN**, once metadata processing finished (extraction COMPLETED/PARTIAL). Public pages, discovery and viewers see a "not security-verified" warning. |
+
+Unchanged: new links are PRIVATE; PENDING, SUSPICIOUS and MALICIOUS stay blocked; email verification, ownership checks (404 for others), SSRF-safe fetching and sharing permissions apply as before. UNKNOWN is never promoted to CLEAR, and an expired CLEAR verdict is treated as UNKNOWN. Turning both flags off restores the strict CLEAR-only policy immediately (previously published UNKNOWN links stop being served publicly). Single source of truth: `App\Services\Security\SecurityPolicy`.

@@ -183,6 +183,7 @@ $paths = [
     // ---------------------------------------------------------------- Public
     '/public/links' => ['get' => $op('Public', 'Discover public links (latest / popular)', ['200' => $ok($list('PublicSavedLink'))], $public + ['parameters' => [...$linkFilters, $query('language', ['enum' => ['ar', 'en']]), $query('sort', ['enum' => ['latest', 'popular', 'relevance']]), ...$pageParams]])],
     '/public/links/{publicId}' => ['get' => $op('Public', 'View a public link', ['200' => $ok($envelope($ref('PublicSavedLink')))], $public + ['parameters' => [$publicId]])],
+    '/public/features' => ['get' => $op('Public', 'Feature flags (temporary security-scanning and sharing policy)', ['200' => $ok($envelope(['type' => 'object', 'properties' => ['security_scanning' => ['type' => 'string', 'enum' => ['COMING_SOON', 'AVAILABLE']], 'unverified_sharing' => ['type' => 'boolean']]]))], $public)],
     '/public/categories' => ['get' => $op('Public', 'Categories with public link counts', ['200' => $ok($envelope(['type' => 'array', 'items' => $ref('Category')]))], $public)],
     '/public/tags' => ['get' => $op('Public', 'Tags used by public links', ['200' => $ok($envelope(['type' => 'array', 'items' => $ref('Tag')]))], $public + ['parameters' => [$query('q', ['type' => 'string'])]])],
     '/public/users/{username}' => ['get' => $op('Public', 'Public profile', ['200' => $ok($envelope($ref('PublicUser')))], $public + ['parameters' => [$pathParam('username', 'Username', '')]])],
@@ -218,7 +219,7 @@ $publicLinkProps = [
     'ai' => ['type' => ['object', 'null'], 'description' => 'AI-generated suggestions (clearly labelled)', 'properties' => ['summary' => $nullableStr, 'detailed_summary' => $nullableStr, 'suggested_title' => $nullableStr, 'suggested_category' => $categoryBrief, 'suggested_tags' => ['type' => 'array', 'items' => ['type' => 'string']], 'generated' => ['const' => true]]],
     'url' => ['type' => ['string', 'null'], 'description' => 'Original URL; null when the policy forbids exposing it to this caller'],
     'open_url' => ['type' => ['string', 'null'], 'description' => 'Destination the client may open; null when blocked'],
-    'security' => ['type' => 'object', 'properties' => ['status' => $ref('SecurityStatus'), 'can_open' => ['type' => 'boolean'], 'warning' => $nullableStr, 'checked_at' => $dt]],
+    'security' => ['type' => 'object', 'properties' => ['status' => $ref('SecurityStatus'), 'can_open' => ['type' => 'boolean'], 'warning' => $nullableStr, 'checked_at' => $dt, 'verified' => ['type' => 'boolean', 'description' => 'true only for an unexpired CLEAR verdict'], 'can_share' => ['type' => 'boolean', 'description' => 'Whether this link may be shared under the current security policy'], 'scanning' => ['type' => 'string', 'enum' => ['COMING_SOON', 'AVAILABLE']]]],
     'owner' => ['oneOf' => [$ref('PublicUserSummary'), ['type' => 'null']]], 'published_at' => $dt,
 ];
 
@@ -299,7 +300,7 @@ $spec = [
             'SecurityScan' => ['type' => 'object', 'properties' => ['trigger' => ['type' => 'string'], 'status' => ['type' => 'string'], 'verdict' => ['oneOf' => [$ref('SecurityStatus'), ['type' => 'null']]], 'providers' => ['type' => 'array', 'items' => ['type' => 'object']], 'error_code' => $nullableStr, 'created_at' => $dt, 'completed_at' => $dt]],
             'SecurityDetails' => ['type' => 'object', 'properties' => [
                 'status' => $ref('SecurityStatus'), 'stored_status' => $ref('SecurityStatus'), 'source' => ['enum' => ['PROVIDER', 'MANUAL_REVIEW']], 'checked_at' => $dt, 'expires_at' => $dt,
-                'can_publish' => ['type' => 'boolean'], 'can_share' => ['type' => 'boolean'], 'can_open' => ['type' => 'boolean'], 'disclaimer' => ['type' => 'string'],
+                'can_publish' => ['type' => 'boolean'], 'can_share' => ['type' => 'boolean'], 'can_open' => ['type' => 'boolean'], 'scanning' => ['type' => 'string', 'enum' => ['COMING_SOON', 'AVAILABLE']], 'unverified_sharing' => ['type' => 'boolean', 'description' => 'true when the link circulates only because of the temporary unverified-sharing policy'], 'disclaimer' => ['type' => 'string'],
                 'history' => ['type' => 'array', 'items' => $ref('SecurityScan')], 'appeals' => ['type' => 'array', 'items' => $ref('Appeal')],
             ]],
             'Appeal' => ['type' => 'object', 'properties' => ['id' => ['type' => 'string', 'format' => 'uuid'], 'status' => ['enum' => ['PENDING', 'APPROVED', 'REJECTED']], 'security_status_at_submission' => $ref('SecurityStatus'), 'reason' => ['type' => 'string'], 'resolution_verdict' => $nullableStr, 'reviewer_notes' => $nullableStr, 'resolved_at' => $dt, 'created_at' => $dt]],

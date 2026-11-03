@@ -42,6 +42,7 @@ Route::prefix('auth')->group(function () {
 // ---------------------------------------------------------------- Public (no authentication)
 Route::prefix('public')->middleware('throttle:public')->group(function () {
     Route::get('links', [PublicController::class, 'links']);
+    Route::get('features', [PublicController::class, 'features']);
     Route::get('links/{publicId}', [PublicController::class, 'link']);
     Route::get('categories', [PublicController::class, 'categories']);
     Route::get('tags', [PublicController::class, 'tags']);

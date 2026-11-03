@@ -71,6 +71,7 @@ return [
     ],
     'security' => [
         'disclaimer' => 'Security checks reduce risk but cannot guarantee that a website is safe.',
+        'coming_soon' => 'Security scanning is coming soon. Manual scans are not available yet.',
         'rescan_queued' => 'A security re-scan has been queued.',
         'appeal_submitted' => 'Your review request has been submitted.',
         'appeal_pending' => 'A review request for this link is already pending.',

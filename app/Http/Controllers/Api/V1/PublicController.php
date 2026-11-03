@@ -21,6 +21,7 @@ use App\Services\Discovery\DiscoveryCache;
 use App\Services\Discovery\ViewRecorder;
 use App\Services\Links\TagService;
 use App\Services\Search\LinkQueryService;
+use App\Services\Security\SecurityPolicy;
 use App\Services\Sharing\LinkViewContext;
 use App\Support\ApiResponse;
 use Illuminate\Http\JsonResponse;
@@ -61,6 +62,15 @@ class PublicController extends Controller
         $this->views->record($savedLink, $request);
 
         return ApiResponse::success(SavedLinkResource::forRole($savedLink, LinkViewContext::PUBLIC));
+    }
+
+    /** Feature flags the frontend needs (no secrets): temporary security-scanning / sharing policy. */
+    public function features(SecurityPolicy $policy): JsonResponse
+    {
+        return ApiResponse::success([
+            'security_scanning' => $policy->scanningComingSoon() ? 'COMING_SOON' : 'AVAILABLE',
+            'unverified_sharing' => $policy->unverifiedSharingEnabled(),
+        ]);
     }
 
     public function categories(): JsonResponse

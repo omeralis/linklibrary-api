@@ -47,6 +47,8 @@ class LinkSecurityController extends Controller
             'can_publish' => $this->policy->mayPublish($link),
             'can_share' => $this->policy->mayShare($link),
             'can_open' => $this->policy->mayOpen($link, true),
+            'scanning' => $this->policy->scanningComingSoon() ? 'COMING_SOON' : 'AVAILABLE',
+            'unverified_sharing' => $this->policy->isUnverifiedButAllowed($link),
             'disclaimer' => __('api.security.disclaimer'),
             'history' => SecurityScanResource::collection($scans)->resolve($request),
             'appeals' => AppealResource::collection($appeals)->resolve($request),
@@ -55,6 +57,9 @@ class LinkSecurityController extends Controller
 
     public function rescan(Request $request, string $publicId): JsonResponse
     {
+        if ($this->policy->scanningComingSoon()) {
+            throw ApiException::unprocessable('SECURITY_SCANNING_COMING_SOON', 'api.security.coming_soon');
+        }
         $savedLink = $this->resolver->resolveOwned($publicId, $request->user());
         $scan = $this->links->requestRescan($savedLink, $request->user());
 

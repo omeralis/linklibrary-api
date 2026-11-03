@@ -2797,6 +2797,31 @@ paths:
           $ref: '#/components/responses/ValidationError'
         429:
           $ref: '#/components/responses/RateLimited'
+  /public/features:
+    get:
+      tags:
+        - Public
+      summary: 'Feature flags (temporary security-scanning and sharing policy)'
+      security: []
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  -
+                    $ref: '#/components/schemas/Envelope'
+                  -
+                    type: object
+                    properties:
+                      data: { type: object, properties: { security_scanning: { type: string, enum: [COMING_SOON, AVAILABLE] }, unverified_sharing: { type: boolean } } }
+        404:
+          $ref: '#/components/responses/NotFound'
+        422:
+          $ref: '#/components/responses/ValidationError'
+        429:
+          $ref: '#/components/responses/RateLimited'
   /public/categories:
     get:
       tags:
@@ -3989,6 +4014,17 @@ components:
                 - string
                 - 'null'
               format: date-time
+            verified:
+              type: boolean
+              description: 'true only for an unexpired CLEAR verdict'
+            can_share:
+              type: boolean
+              description: 'Whether this link may be shared under the current security policy'
+            scanning:
+              type: string
+              enum:
+                - COMING_SOON
+                - AVAILABLE
         owner:
           oneOf:
             -
@@ -4300,6 +4336,14 @@ components:
           type: boolean
         can_open:
           type: boolean
+        scanning:
+          type: string
+          enum:
+            - COMING_SOON
+            - AVAILABLE
+        unverified_sharing:
+          type: boolean
+          description: 'true when the link circulates only because of the temporary unverified-sharing policy'
         disclaimer:
           type: string
         history:

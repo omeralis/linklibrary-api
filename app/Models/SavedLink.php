@@ -4,10 +4,10 @@ namespace App\Models;
 
 use App\Enums\AccountStatus;
 use App\Enums\GrantStatus;
-use App\Enums\SecurityStatus;
 use App\Enums\SourceType;
 use App\Enums\Visibility;
 use App\Models\Concerns\HasPublicId;
+use App\Services\Security\SecurityPolicy;
 use Database\Factories\SavedLinkFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -151,7 +151,7 @@ class SavedLink extends Model
     {
         return $this->isPublic()
             && ! $this->trashed()
-            && $this->link->isClear()
+            && ($this->link->isClear() || app(SecurityPolicy::class)->isUnverifiedButAllowed($this->link))
             && $this->user->isActive();
     }
 
@@ -201,7 +201,7 @@ class SavedLink extends Model
     }
 
     /**
-     * Saved links that may be shown to anyone: PUBLIC, not deleted, currently CLEAR (not expired),
+     * Saved links that may be shown to anyone: PUBLIC, not deleted, currently CLEAR (not expired) or, under the temporary policy, UNKNOWN with processed metadata,
      * owned by an active account.
      *
      * @param  Builder<SavedLink>  $query
@@ -212,9 +212,7 @@ class SavedLink extends Model
         return $query
             ->where('saved_links.visibility', Visibility::PUBLIC->value)
             ->whereNull('saved_links.deleted_at')
-            ->whereHas('link', fn (Builder $q) => $q
-                ->where('security_status', SecurityStatus::CLEAR->value)
-                ->where('security_expires_at', '>', now()))
+            ->whereHas('link', fn (Builder $q) => app(SecurityPolicy::class)->constrainPublic($q))
             ->whereHas('user', fn (Builder $q) => $q->where('status', AccountStatus::ACTIVE->value));
     }
 

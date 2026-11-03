@@ -15,6 +15,7 @@ use App\Services\Http\HttpTransport;
 use App\Services\Http\SafeHttpClient;
 use App\Services\Security\HeuristicReputationProvider;
 use App\Services\Security\ReputationService;
+use App\Services\Security\SecurityPolicy;
 use App\Services\Security\SecurityScanService;
 use App\Services\Security\UrlReputationProvider;
 use Database\Seeders\CategorySeeder;
@@ -72,6 +73,17 @@ abstract class TestCase extends BaseTestCase
         foreach ([SafeHttpClient::class, RobotsPolicy::class, ExtractionService::class, AiService::class, SecurityScanService::class] as $class) {
             $this->app->forgetInstance($class);
         }
+    }
+
+    /** Switch the temporary security-scanning / unverified-sharing flags for the current test. */
+    protected function useSecurityPolicy(bool $allowUnverifiedSharing, bool $scanningComingSoon = false): void
+    {
+        config([
+            'linklibrary.security.allow_unverified_sharing' => $allowUnverifiedSharing,
+            'linklibrary.security.scanning_coming_soon' => $scanningComingSoon,
+        ]);
+        $this->app->forgetInstance(SecurityPolicy::class);
+        $this->forgetNetworkSingletons();
     }
 
     /** @param list<UrlReputationProvider> $providers */

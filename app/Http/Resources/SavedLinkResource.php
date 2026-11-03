@@ -103,6 +103,10 @@ class SavedLinkResource extends JsonResource
                 'can_open' => $canOpen,
                 'warning' => $policy->requiresWarning($link) ? 'security.'.strtolower($status->value) : null,
                 'checked_at' => $link->security_checked_at?->toIso8601String(),
+                // false for every status except an unexpired CLEAR; the UI must say "not security-verified".
+                'verified' => $status === SecurityStatus::CLEAR,
+                'can_share' => $policy->mayShare($link),
+                'scanning' => $policy->scanningComingSoon() ? 'COMING_SOON' : 'AVAILABLE',
             ],
             'owner' => PublicUserResource::summary($s->user),
             'published_at' => $s->isPublic() ? $s->published_at?->toIso8601String() : null,

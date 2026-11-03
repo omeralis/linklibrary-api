@@ -70,7 +70,11 @@ class AppServiceProvider extends ServiceProvider
             allowDowngrade: (bool) config('linklibrary.fetch.allow_https_to_http_redirect'),
         ));
 
-        $this->app->singleton(SecurityPolicy::class, fn () => new SecurityPolicy((bool) config('linklibrary.security.fetch_when_unknown')));
+        $this->app->singleton(SecurityPolicy::class, fn () => new SecurityPolicy(
+            (bool) config('linklibrary.security.fetch_when_unknown'),
+            (bool) config('linklibrary.security.allow_unverified_sharing'),
+            (bool) config('linklibrary.security.scanning_coming_soon'),
+        ));
 
         $this->app->singleton(ReputationService::class, function () {
             $providers = [];

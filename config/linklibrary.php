@@ -69,6 +69,14 @@ return [
         // When no reputation provider can vouch for a URL its status is UNKNOWN. Fetching metadata for
         // UNKNOWN URLs is allowed by default (the SSRF-safe client protects the server); publication is not.
         'fetch_when_unknown' => (bool) env('SECURITY_FETCH_WHEN_UNKNOWN', true),
+        // Temporary product policy (reversible). While the security-scanning feature is deferred ("Coming Soon"):
+        //  - scanning_coming_soon: manual scan/rescan is disabled and the UI shows "Coming Soon". The scanning
+        //    architecture, jobs and records are untouched and keep running.
+        //  - allow_unverified_sharing: authenticated owners may publish/share links whose status is UNKNOWN (never
+        //    marked CLEAR) once URL validation and metadata processing succeeded. SUSPICIOUS/MALICIOUS stay blocked.
+        // Set both to false when scanning becomes available to restore the strict CLEAR-only policy.
+        'scanning_coming_soon' => (bool) env('SECURITY_SCANNING_COMING_SOON', false),
+        'allow_unverified_sharing' => (bool) env('SECURITY_ALLOW_UNVERIFIED_SHARING', false),
         'blocklist_hosts' => array_filter(explode(',', (string) env('SECURITY_BLOCKLIST_HOSTS', ''))),
         'safe_browsing' => [
             'api_key' => env('GOOGLE_SAFE_BROWSING_API_KEY'),
