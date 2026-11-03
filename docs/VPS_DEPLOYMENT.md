@@ -1,5 +1,7 @@
 # LinkLibrary VPS deployment runbook
 
+> 2026-11-03 correction: this is historical deployment context, not a current health attestation. The later audit found writable code; the root-owned-code claim below was incorrect. Local hardening is NOT installed. Follow VPS_MANUAL_REMEDIATION.md and REMEDIATION_REPORT.md before any future deployment. No VPS was contacted in this remediation.
+
 Updated 2026-11-02 (Asia/Riyadh). Application deployed and verified over trusted IP HTTPS. Provider-dependent features remain limited; see VPS_DEPLOYMENT_REPORT.md.
 
 ## Access and architecture
@@ -43,7 +45,7 @@ GD needs a libgd version newer than the library mapped by existing Nginx. To avo
 
 Node remains 22.23.3, PostgreSQL remains 14.24, Nginx remains 1.18.0. No unrelated runtime upgrade or restart occurred. The newly installed unused default php8.4-fpm unit is disabled; linklibrary-api is the dedicated FPM service.
 
-Code is root-owned and runtime-readable. Only Laravel shared storage, bootstrap/cache and Next .next/cache have the required runtime write access. bootstrap/cache files are mode 0640 because cached configuration contains secrets. Shared environment files are never publicly served. APP_KEY, database password and private frontend key were generated on the server; no development env file was copied.
+The original deployment intended root-owned, runtime-readable code, but the later audit found app-owned/group-writable code. This invariant is NOT currently established. Only Laravel shared storage, bootstrap/cache and Next .next/cache have the required runtime write access. bootstrap/cache files are mode 0640 because cached configuration contains secrets. Shared environment files are never publicly served. APP_KEY, database password and private frontend key were generated on the server; no development env file was copied.
 
 ## Production environment names
 
@@ -104,16 +106,7 @@ Backups remain on the VPS; off-host encrypted storage and separate recovery-key 
 
 ## Safe future releases and rollback
 
-1. Review clean Git histories and exact commit hashes; never force-push/overwrite remote history. Export only tracked reviewed source. Exclude development env, fixtures/archives, vendor/node_modules and git metadata.
-2. Create a new directory under releases and build there with npm ci and locked Composer dependencies; never mutate current code in place. Temporarily give build account access only to new release. Fresh releases link preserved shared storage/env. Create resources/views if absent (Git does not retain empty dirs).
-3. Run checks using isolated test credentials and *_test DB; never run destructive tests on production. Run Composer platform/audit and npm production audit. Confirm actual Linux build with intended public URLs.
-4. Take/verify backup. Review migration up methods and assert current_database/current_user. Generate temporary migrator credentials safely; migrate forward only with linklibrary_migrator/owner role, never runtime superuser. Remove temporary credential file after use. No seeders, migrate:fresh, db:wipe or dev-mark-clear.
-5. Cache API config/routes/views for new release under correct env; harden code ownership, cached-secret permissions and runtime cache write paths. Use atomic current symlink switch. Gracefully restart only LinkLibrary FPM/web/queue; scheduler has one timer. Verify nginx config before any reload and verify actual listener after it.
-6. Smoke test trusted TLS, DB, queues, scheduler, storage, auth, both languages and existing sites. Keep three successful releases when available; only one initial release currently exists.
-
-Rollback to a prior schema-compatible release by pausing only LinkLibrary writers, atomically switching current to that prior release and restarting only new-app services. Shared env/key/storage persist. Do not run down migrations automatically. On the initial release there is no prior application release; disabling only the LinkLibrary hosts/services is the fallback while preserving its database/backups. Never restore the whole old Nginx archive over current production configuration.
-
-A reload from loopback-only :8080 to wildcard :8080 could not bind the old socket; this was resolved without restart by keeping loopback and adding an explicit 31.172.87.248:8080 listener. Always check ss after reload; nginx -t alone does not prove a new listener bound.
+The previous manual clone/build procedure is superseded by [CICD.md](CICD.md), [DEPLOYMENT_SECURITY.md](DEPLOYMENT_SECURITY.md) and [VPS_MANUAL_REMEDIATION.md](VPS_MANUAL_REMEDIATION.md). Do not clone or repair a mutable live release without independent provenance validation. Build locked artifacts outside production, require immutable manifests, and use the journaled release engine only after separate installation and approval. No database down migrations.
 
 ## Future domain migration
 

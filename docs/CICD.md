@@ -1,92 +1,40 @@
-# LinkLibrary CI/CD (prepared, DISABLED)
+# LinkLibrary CI/CD — local remediation, deployment disabled
 
-Status: workflows are committed-ready but inert. Tests run on every push to `main`; the `deploy`/`rollback` jobs run only when the
-repository variable `DEPLOY_ENABLED` is exactly `true`. Nothing here has been run against the real VPS or GitHub Actions yet.
+Updated 2026-11-03. These changes were prepared and verified locally; local commits do not activate deployment. No workflow was dispatched, settings changed, secret installed, VPS contacted, or release activated in this remediation. See [REMEDIATION_REPORT.md](REMEDIATION_REPORT.md) for blockers and exact test results.
 
-## Why production was not updating
-Neither repository had `.github/workflows`. The first release was provisioned by one-off scripts (`deployment/*.py`, untracked,
-hard-coded release `20261102-01`). A push to GitHub therefore never reached the server.
+## Execution and authorization
 
-## Flow (reuses releases/, shared env, backup unit, systemd units, atomic `current` symlink)
-1. GitHub runner: tests (`_test.yml`) -> build tracked source only -> `release.tgz` + sha256.
-2. Upload over SSH with a dedicated key. The key can run only `/srv/linklibrary/tools/ll-ingest` (forced command).
-3. `ll-release` (root-owned, run through a single sudo rule): copies the package into a root-only staging dir and checks its
-   sha256 against the digest CI computed; validates the archive structure (no absolute paths, `..`, hard links, devices, setuid,
-   escaping symlinks, size caps); copies `current` to a new release dir and replaces only the deployed component; links shared
-   env/storage; (api) takes a backup and runs forward-only migrations as `linklibrary_migrator` with a temporary password;
-   rebuilds config/route/view caches for the new path (always, because caches contain absolute paths); hardens ownership;
-   switches `current` atomically; restarts only `linklibrary-api`, `linklibrary-web`, `linklibrary-queue`; smoke-tests `/up`,
-   `/en`, `/ar` and `health.sh`. All builds (composer, `npm ci`, `next build`) happen on the GitHub runner, never on the 2 GB VPS.
-4. Smoke failure => automatic switch back to the previous release. Manual rollback: workflow_dispatch -> action `rollback`.
-   Database migrations are never rolled back; keep migrations backward compatible.
+`ci.yml` runs on all pushes and PRs. Reusable `_test.yml` runs the existing strict/temporary **test-only** security matrix against disposable PostgreSQL. API security tests run separately as root inside disposable Linux fixtures. Production artifact builds run independently of deployment enablement.
 
-Never touched: Nginx, PM2 / omerali.*, other databases, unrelated units. Releases keep 3 CI builds + current + previous + original.
+`deploy.yml` has only `workflow_dispatch`. It requires main, an existing `DEPLOY_ENABLED` exactly `true`, a full 40-character approved SHA matching both origin/main and GITHUB_SHA, and literal `deploy linklibrary-api` or `rollback linklibrary-api`. Web uses the matching `linklibrary-web` literal. Rollback requires an explicit known release ID. A push alone cannot deploy, even if the variable is later enabled. Leave that variable absent during remediation.
 
-## Security model (summary)
-- PR code never sees secrets: `ci.yml` runs on `pull_request`/non-main pushes with `contents: read` and no secrets; deploy jobs exist only
-  on `push` to `main` or manual dispatch, require `DEPLOY_ENABLED=true`, run in environment `production`. Restrict that environment to the
-  `main` branch (Settings -> Environments -> Deployment branches) and enable branch protection on `main`.
-- The SSH key can only run `ll-ingest`; `ll-ingest` can only upload to `incoming/` and sudo one root-owned script; `ll-release`
-  re-validates everything and never reads the CI-writable file after verifying a root-owned copy.
-- Residual risk (cannot be removed by design): whoever can push to `main` and approve the environment can ship code that runs as
-  `linklibrary` and migrates `linklibrary_prod`. Use branch protection, required reviewers and a hardware-backed GitHub account.
-- Rollback never reverts the database: write migrations expand/contract (additive first) so the previous release keeps working.
-- Actions are pinned to major version tags, not commit SHAs (SHAs could not be verified offline): pin them or enable Dependabot before enabling deploy.
+Deployment requires successful tests, security harness (API), and artifact build. Build jobs receive no production environment or SSH secrets. The separate production-environment job downloads an opaque artifact, validates SHA256/component/commit/Ubuntu baseline (and web public origin), and only then loads SSH secrets in one restricted step. It never runs Composer/npm or code from inside the artifact. The approved checkout still supplies executable deployment tooling: review it and protect main.
 
-## GitHub configuration (both repos)
-Environment `production` (add a required reviewer if you want a manual gate).
-- Secrets: `LL_SSH_PRIVATE_KEY` (dedicated ed25519 private key), `LL_SSH_KNOWN_HOSTS` (output of `ssh-keyscan -t ed25519 HOST`, verified against the server fingerprint).
-- Variables: `LL_SSH_HOST`, `LL_SSH_PORT` (optional), `LL_SSH_USER` (default `llci`), `DEPLOY_ENABLED` (leave unset until ready);
-  web repo only: `LL_PUBLIC_ORIGIN` (`https://31.172.87.248:8080`), optional `LL_CONTACT_EMAIL`.
-No VPS password, API key or app secret is stored in GitHub; app secrets stay in `/srv/linklibrary/shared/*.env`.
+Both repositories use `contents: read`, no persisted checkout credentials, immutable upstream action commits recorded in `deploy/ACTION_PINS.json`, production concurrency with cancellation disabled, and a shared server-side nonblocking flock. Repository concurrency alone does not serialize two repositories; a contending server deployment fails safely and must be retried after review.
 
-## One-time server setup (administrator, from the existing `omerali-vps` session; review each command first)
-```
-sudo adduser --disabled-password --gecos "" llci                    # NOT in sudo/adm/docker groups
-sudo install -d -m 700 -o llci -g llci /home/llci/.ssh
-sudo install -d -m 755 -o llci -g llci /srv/linklibrary/incoming
-sudo install -m 0755 -o root -g root deploy/server/ll-ingest  /srv/linklibrary/tools/ll-ingest
-sudo install -m 0750 -o root -g root deploy/server/ll-release /srv/linklibrary/tools/ll-release
-sudo install -m 0440 deploy/server/sudoers-linklibrary-deploy /etc/sudoers.d/linklibrary-deploy
-sudo visudo -cf /etc/sudoers.d/linklibrary-deploy
-ssh-keygen -t ed25519 -N "" -C github-actions-linklibrary -f ./ll_deploy   # on a trusted machine; delete the private file after saving it as the GitHub secret
-# /home/llci/.ssh/authorized_keys (one line):
-restrict,command="/srv/linklibrary/tools/ll-ingest",no-pty <contents of ll_deploy.pub>
-```
-Prerequisite checks before enabling: `/srv/linklibrary/shared/release-prev` is created on first deploy; `linklibrary_migrator` can
-`ALTER ROLE ... PASSWORD` only by postgres (the script uses `runuser -u postgres`); the existing release must have `api/.env` and
-`api/storage` as symlinks to `shared/` (as provisioned).
+## Artifact contract
 
-## Hardening notes for `ll-release` (root script)
-- Root only works on root-owned trees; a new release is `root:linklibrary`, read-only for the app account. The app account (which also runs
-  the migration code) can write only `api/bootstrap/cache` and `web/.next/cache`; root never chmods/chowns/follows anything inside them.
-- The temporary `linklibrary_migrator` password is reset on success, failure, SIGINT/SIGTERM/SIGHUP (EXIT trap) and carries `VALID UNTIL`
-  30 minutes as a backstop for SIGKILL/power loss. It travels in the command environment, never in argv. If a reset ever fails the script
-  prints CRITICAL; fix with `sudo -u postgres psql -c "ALTER ROLE linklibrary_migrator PASSWORD NULL"`.
-- Send TERM to the whole process group (sudo/systemd do); bash runs its trap after the foreground child ends.
-- After changing `deploy/server/*` in Git, the files must be RE-INSTALLED on the VPS by an administrator (CI deliberately cannot update them).
+Ubuntu 22.04 builds match glibc 2.35; web pins Node 22.23.3. Locked installs and platform checks precede packaging. Archive metadata records component/full SHA/platform/libc/public origin. Packages omit environment files, tests, deployment tooling and writable caches. API retains only `docs/openapi.yaml` from docs. Web validates required Next runtime/static files, scans static assets for a private fixture canary, and starts the extracted archive for EN/AR smoke checks. Do not build an artifact on Windows for production or transport Ubuntu 24.04 native modules blindly.
 
-## Server preflight (read-only, before the setup commands)
-```
-sudo sshd -T | grep -i -E '^(allowusers|allowgroups|denyusers|passwordauthentication|authorizedkeysfile)'   # if AllowUsers/AllowGroups is set, llci must be added or login fails
-id llci 2>&1                                   # must NOT exist yet
-ls -ld /srv/linklibrary /srv/linklibrary/tools /srv/linklibrary/shared /srv/linklibrary/releases
-readlink -f /srv/linklibrary/current           # expected: /srv/linklibrary/releases/20261102-01
-ls -l /srv/linklibrary/current/api/.env /srv/linklibrary/current/api/storage /srv/linklibrary/current/web/.env.production   # symlinks into shared/
-sudo -u postgres psql -Atc "select rolname,rolcanlogin,rolconfig from pg_roles where rolname like 'linklibrary%'"   # migrator: role=linklibrary_owner
-df -h /srv /var/backups; free -m
-```
+Independent web CI uses reserved `https://linklibrary.invalid`, never production secrets. The manual web build requires the reviewed HTTPS `public_origin`; the protected job compares it with production `LL_PUBLIC_ORIGIN`. Only NEXT_PUBLIC values belong in client code. Server private keys are not needed for building. Native library and actual VPS runtime compatibility must still be checked in staging before enabling deployment.
 
-## GitHub settings (cannot be verified from code)
-- Settings -> Environments -> `production`: Deployment branches = Selected branches -> `main` only; add yourself as required reviewer; put the two SSH secrets
-  in the ENVIRONMENT (not repository) secrets, so no other branch or workflow can read them.
-- Branch protection on `main`: require PR + passing `CI`, block force-push and deletion.
-- Actions -> General: Workflow permissions = Read repository contents; do not allow Actions to approve PRs.
+## Restricted SSH
 
-## Activation checklist
-1. Review and commit these files with normal commits (no history rewrite) and push to `main`; confirm the CI jobs pass.
-2. Do the server setup above; test `ssh -i key llci@HOST status` (must only print the release list) and `ssh ... "id"` (must be denied).
-3. Add the secrets/variables, then run `Deploy API` / `Deploy Web` with `DEPLOY_ENABLED` still unset (tests only).
-4. Set `SECURITY_SCANNING_COMING_SOON=true` and `SECURITY_ALLOW_UNVERIFIED_SHARING=true` in `shared/api.env`; keep `AI_PROVIDER=null`.
-5. Set `DEPLOY_ENABLED=true`; run the workflow by hand once and verify the live site in Arabic and English.
-6. Rehearse a rollback with the manual `rollback` action.
+Production secrets: `LL_SSH_PRIVATE_KEY`, `LL_SSH_KNOWN_HOSTS` (independently verified host key). Production variables: `LL_SSH_HOST`, `LL_SSH_PORT`, `LL_SSH_USER=llci`; web also `LL_PUBLIC_ORIGIN`. Do not install or change these in this task. Dedicated forced-command ll-ingest accepts only exact upload/deploy/status/explicit rollback grammar. No arbitrary shell, scp, forwarding, PTY or general sudo. See sudoers and server source. SSH uses pinned known hosts, strict checking and no host-key updates.
+
+Temporary key/known-host files live under RUNNER_TEMP. Shell EXIT/INT/TERM/HUP cleanup plus an `if: always()` job backstop remove them after success/failure. SIGKILL/runner destruction cannot execute traps; ephemeral runners and destruction of their temporary disk remain part of the trust model. Artifacts never contain keys.
+
+## Manual GitHub UI prerequisites — BOTH repositories
+
+1. Settings → Rules → Rulesets → New branch ruleset, target `main`, active enforcement. Require a pull request, at least one independent approval, dismiss stale approvals, require approval of the most recent reviewable push and resolve conversations. Restrict bypass (including administrators); do not add a broad bypass actor.
+2. Require status checks and an up-to-date branch. After CI has actually run, select the exact contexts GitHub reports, rather than inventing contexts: API reusable `test / test (strict policy)`, `test / test (temporary policy)`, `build`, `deployment-security`; web reusable `test / test`, `build`. If GitHub displays a workflow prefix, select that actual context. No run has been created by this task to populate them.
+3. Block force pushes and deletion; prohibit direct main pushes through the PR requirement. Keep merge history policies consistent with repository practice; this task does not rewrite history.
+4. Settings → Environments → production: selected deployment branch `main` only, required independent reviewers, prevent self-review and disable administrator bypass where supported. Confirm both deploy and rollback jobs name this environment.
+5. If the repository plan does not support reviewer protection, keep deployment disabled until an equivalent independently approved governance control is designed. The boolean variable is not a substitute for reviewers/protected main.
+6. Record screenshots/exported rule IDs and an actual confirmation of enforcement before claiming protection active. Secret rotation/configuration, enabling deployment and first dispatch each require separately approved work. None happened here.
+
+## First approved deployment / rollback
+
+Use [VPS_MANUAL_REMEDIATION.md](VPS_MANUAL_REMEDIATION.md) first. An unmanifested/mutable current release is deliberately rejected before migration. Review forward-only schema compatibility and fresh backups; retain original/candidate evidence. Only after local regression blockers, staging, root helper installation, source provenance repair and GitHub protections are verified should an administrator authorize an explicit full-SHA manual deployment. Monitor the root-only transaction journal and mandatory readiness gates. Post-deployment checks include trusted TLS, DB identity, four units, public API, both locales, session/CSRF behavior and unchanged existing sites.
+
+Explicit workflow rollback restores an immutable, schema-compatible release pointer and restarts only LinkLibrary API/web/queue. It does not revert schema. Emergency journal recovery and metadata restoration are documented separately; never delete the journal to bypass an unfinished transaction.

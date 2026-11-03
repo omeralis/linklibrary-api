@@ -2,7 +2,6 @@ name: CI
 on:
   pull_request:
   push:
-    branches-ignore: [main]   # main is tested by deploy.yml before any release
 permissions:
   contents: read
 concurrency:
@@ -11,3 +10,33 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/_test.yml
+  build:
+    needs: test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          extensions: pgsql, pdo_pgsql, intl, mbstring, gd, bcmath, zip, xml, curl
+          tools: composer:v2
+          coverage: none
+      - name: Build and validate production artifact independently of deployment
+        run: bash deploy/build-api.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-release-${{ github.sha }}
+          path: |
+            release.tgz
+            release.sha256
+          retention-days: 7
+  deployment-security:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - run: sudo python3 -B deploy/tests/test_release.py
+      - run: python3 -B deploy/tests/test_packaging.py
