@@ -38,6 +38,7 @@ class PublicDiscoveryTest extends TestCase
 
     public function test_only_public_clear_links_from_active_accounts_are_listed(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         $visible = $this->publicLink();
         $private = $this->savedLinkFor($this->owner, ['notes' => 'n']);
         $suspicious = $this->publicLink(link: Link::factory()->security(SecurityStatus::SUSPICIOUS)->create());

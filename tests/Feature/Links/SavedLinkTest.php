@@ -151,6 +151,7 @@ class SavedLinkTest extends TestCase
 
     public function test_visibility_transitions_respect_security_and_verification(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         $user = $this->actingAsUser();
         $clear = $this->savedLinkFor($user);
         $this->patchJson("/api/v1/links/{$clear->public_id}/visibility", ['visibility' => 'PUBLIC'])

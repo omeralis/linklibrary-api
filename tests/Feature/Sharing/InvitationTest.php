@@ -147,6 +147,7 @@ class InvitationTest extends TestCase
 
     public function test_sharing_requires_clear_security_status(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         foreach ([SecurityStatus::PENDING, SecurityStatus::UNKNOWN, SecurityStatus::SUSPICIOUS, SecurityStatus::MALICIOUS] as $status) {
             $saved = $this->savedLinkFor($this->owner, link: Link::factory()->security($status)->create());
             $this->invite($this->owner, $saved, 'x@example.com')->assertStatus(422)->assertJsonPath('code', 'LINK_NOT_SHAREABLE');

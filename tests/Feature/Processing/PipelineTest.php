@@ -187,6 +187,7 @@ class PipelineTest extends TestCase
 
     public function test_unavailable_threat_intel_never_results_in_clear(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         $this->intel->default = 'PROVIDER_HTTP_503';
         $this->transport->html('https://unknown.example.com/', self::ARTICLE);
         $user = User::factory()->create();

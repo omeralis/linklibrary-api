@@ -83,6 +83,7 @@ class NotificationsAndAdminTest extends TestCase
 
     public function test_rescan_requests_are_deduplicated_and_audited(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         Queue::fake();
         $owner = $this->actingAsUser();
         $saved = $this->savedLinkFor($owner);

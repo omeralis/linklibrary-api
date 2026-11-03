@@ -31,6 +31,10 @@
         <env name="SESSION_DRIVER" value="array"/>
         <env name="AI_PROVIDER" value="null"/>
         <env name="SECURITY_PROVIDERS" value="heuristic"/>
+        <!-- Strict baseline; deployment flags in .env/.env.example must never leak into tests. Tests that need the temporary
+             policy call useSecurityPolicy() explicitly. Not forced, so CI can re-run the whole suite with the flags on. -->
+        <env name="SECURITY_SCANNING_COMING_SOON" value="false"/>
+        <env name="SECURITY_ALLOW_UNVERIFIED_SHARING" value="false"/>
         <env name="FRONTEND_URL" value="http://localhost:3000"/>
         <env name="SANCTUM_STATEFUL_DOMAINS" value="localhost:3000"/>
         <env name="LOG_DEPRECATIONS_CHANNEL" value="deprecations"/>

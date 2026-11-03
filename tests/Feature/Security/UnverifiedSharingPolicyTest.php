@@ -29,6 +29,7 @@ class UnverifiedSharingPolicyTest extends TestCase
 
     public function test_default_policy_is_unchanged_and_strict(): void
     {
+        $this->useSecurityPolicy(allowUnverifiedSharing: false, scanningComingSoon: false); // strict policy, independent of the environment
         $user = $this->actingAsUser();
         $saved = $this->savedLinkFor($user, link: $this->unknownLink());
 

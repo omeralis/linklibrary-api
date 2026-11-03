@@ -5,8 +5,15 @@ permissions:
   contents: read
 jobs:
   test:
+    name: test (${{ matrix.policy }} policy)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { policy: strict, scanning_coming_soon: 'false', allow_unverified: 'false' }
+          - { policy: temporary, scanning_coming_soon: 'true', allow_unverified: 'true' }
     services:
       postgres:
         image: postgres:16
@@ -22,6 +29,9 @@ jobs:
       DB_USERNAME: ci
       DB_PASSWORD: ci-only-throwaway
       APP_ENV: testing
+      # Policy flags come ONLY from the matrix, never from .env.example (which carries deployment defaults).
+      SECURITY_SCANNING_COMING_SOON: ${{ matrix.scanning_coming_soon }}
+      SECURITY_ALLOW_UNVERIFIED_SHARING: ${{ matrix.allow_unverified }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -33,7 +43,10 @@ jobs:
           coverage: none
       - run: composer install --no-interaction --prefer-dist --no-progress
       - run: composer audit --no-interaction
-      - run: cp .env.example .env && php artisan key:generate --ansi
-      - run: vendor/bin/pint --test
-      - run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+      - name: Minimal .env (APP_KEY only; nothing from .env.example)
+        run: printf 'APP_KEY=%s\n' "$(php artisan key:generate --show)" > .env
+      - if: matrix.policy == 'strict'
+        run: vendor/bin/pint --test
+      - if: matrix.policy == 'strict'
+        run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
       - run: php artisan config:clear && php artisan test --compact
