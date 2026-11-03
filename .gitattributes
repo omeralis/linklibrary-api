@@ -12,3 +12,7 @@
 /.github export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore
+
+# Deployment helpers execute on Linux; preserve exact reviewed bytes.
+deploy/** text eol=lf
+.github/workflows/*.yml text eol=lf

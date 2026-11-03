@@ -1,0 +1,26 @@
+{
+  "verified": "2026-11-03",
+  "method": "git ls-remote official HTTPS repositories, annotated tags peeled to commit",
+  "actions": {
+    "actions/checkout": {
+      "sha": "11d5960a326750d5838078e36cf38b85af677262",
+      "tag": "v4"
+    },
+    "actions/setup-node": {
+      "sha": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "tag": "v4"
+    },
+    "actions/upload-artifact": {
+      "sha": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "tag": "v4"
+    },
+    "shivammathur/setup-php": {
+      "sha": "eb7c497e18156a6bbabfef1d3a82760b9eda3962",
+      "tag": "v2"
+    },
+    "actions/download-artifact": {
+      "sha": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "tag": "v4"
+    }
+  }
+}

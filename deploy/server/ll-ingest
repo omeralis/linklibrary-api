@@ -1,32 +1,55 @@
 #!/bin/bash
-# SSH forced command for the dedicated CI account (see authorized_keys line in docs/CICD.md).
-# Installed ROOT-OWNED at /srv/linklibrary/tools/ll-ingest (0755). It is the ONLY thing the CI key can run.
-#   upload <api|web> <40-hex-commit> <64-hex-sha256>   (tarball on stdin, max 400 MB)
-#   deploy <api|web> <40-hex-commit> <64-hex-sha256>
-#   rollback [<release-id>]
-#   status
+# Forced command: root-owned 0755. No eval, shell expansion, forwarding or implicit rollback target.
 set -euo pipefail
 umask 077
 export PATH=/usr/bin:/bin
+ll_parse() {
+  local original=${1:-}
+  [[ "$original" != *$'\n'* && "$original" != *$'\r'* ]] || return 2
+  read -r -a args <<< "$original"
+  [ ${#args[@]} -gt 0 ] || return 2
+  case "${args[0]}" in
+    upload|deploy)
+      [ ${#args[@]} -eq 4 ] && [[ "${args[1]}" =~ ^(api|web)$ && "${args[2]}" =~ ^[0-9a-f]{40}$ && "${args[3]}" =~ ^[0-9a-f]{64}$ ]] ;;
+    rollback)
+      [ ${#args[@]} -eq 2 ] && [[ "${args[1]}" =~ ^([0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}|[0-9]{8}-[0-9]{2})$ ]] ;;
+    status) [ ${#args[@]} -eq 1 ] ;;
+    *) return 2 ;;
+  esac
+}
+ll_ingest_main() {
+ll_parse "${SSH_ORIGINAL_COMMAND:-}" || { echo denied >&2; return 2; }
+verb=${args[0]}
 INC=/srv/linklibrary/incoming
-read -r verb a b c _ <<<"${SSH_ORIGINAL_COMMAND:-}"
 case "$verb" in
-upload)
-  [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo "bad args" >&2; exit 2; }
-  [ "$(df --output=avail -B1M "$INC" | tail -1)" -gt 2500 ] || { echo "disk space low" >&2; exit 2; }
-  find "$INC" -maxdepth 1 -type f \( -name '.up.*' -o -name '*.tgz' \) -mmin +120 -delete 2>/dev/null || true
-  tmp=$(mktemp "$INC/.up.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+upload|deploy)
+  [ ${#args[@]} -eq 4 ] || { echo 'bad argument count' >&2; exit 2; }
+  a=${args[1]}; b=${args[2]}; c=${args[3]}
+  [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo 'bad arguments' >&2; exit 2; }
+  if [ "$verb" = deploy ]; then
+    exec sudo -n /srv/linklibrary/tools/ll-release deploy "$a" "$b" "$c"
+  fi
+  [ "$(df --output=avail -B1M "$INC" | tail -1)" -gt 4500 ] || { echo 'disk space low' >&2; exit 2; }
+  tmp=$(mktemp "$INC/.up.XXXXXX")
+  trap 'rm -f -- "$tmp"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   head -c 419430401 > "$tmp"
-  [ "$(stat -c %s "$tmp")" -le 419430400 ] || { echo "too large" >&2; exit 2; }
-  [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$c" ] || { echo "sha256 mismatch" >&2; exit 2; }
-  mv -f "$tmp" "$INC/$a-$b.tgz"; trap - EXIT; echo "uploaded $a ${b:0:7}" ;;
-deploy)
-  [[ "$a" =~ ^(api|web)$ && "$b" =~ ^[0-9a-f]{40}$ && "$c" =~ ^[0-9a-f]{64}$ ]] || { echo "bad args" >&2; exit 2; }
-  exec sudo -n /srv/linklibrary/tools/ll-release deploy "$a" "$b" "$c" ;;
+  [ "$(stat -c %s "$tmp")" -le 419430400 ] || { echo 'too large' >&2; exit 2; }
+  [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$c" ] || { echo 'sha256 mismatch' >&2; exit 2; }
+  mv -f -- "$tmp" "$INC/$a-$b.tgz"
+  echo "uploaded $a ${b:0:7}" ;;
 rollback)
-  if [ -n "${a:-}" ]; then [[ "$a" =~ ^([0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}|[0-9]{8}-[0-9]{2})$ ]] || { echo "bad id" >&2; exit 2; }; fi
-  exec sudo -n /srv/linklibrary/tools/ll-release rollback ${a:+"$a"} ;;
+  [ ${#args[@]} -eq 2 ] || { echo 'explicit release required' >&2; exit 2; }
+  [[ "${args[1]}" =~ ^([0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}|[0-9]{8}-[0-9]{2})$ ]] || { echo 'bad release' >&2; exit 2; }
+  exec sudo -n /srv/linklibrary/tools/ll-release rollback "${args[1]}" ;;
 status)
-  readlink -f /srv/linklibrary/current; ls -1t /srv/linklibrary/releases | head -6 ;;
-*) echo "denied" >&2; exit 2 ;;
+  [ ${#args[@]} -eq 1 ] || { echo 'bad argument count' >&2; exit 2; }
+  readlink -f /srv/linklibrary/current
+  find /srv/linklibrary/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | head -6 ;;
+*) echo denied >&2; exit 2 ;;
 esac
+
+}
+if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then ll_ingest_main; fi

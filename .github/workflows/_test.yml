@@ -1,12 +1,17 @@
 name: _test
 on:
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ""
 permissions:
   contents: read
 jobs:
   test:
     name: test (${{ matrix.policy }} policy)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -33,9 +38,9 @@ jobs:
       SECURITY_SCANNING_COMING_SOON: ${{ matrix.scanning_coming_soon }}
       SECURITY_ALLOW_UNVERIFIED_SHARING: ${{ matrix.allow_unverified }}
     steps:
-      - uses: actions/checkout@v4
-        with: { persist-credentials: false }
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; verified upstream 2026-11-03
+        with: { persist-credentials: false, ref: "${{ inputs.ref || github.sha }}" }
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2; verified upstream 2026-11-03
         with:
           php-version: '8.4'
           extensions: pgsql, pdo_pgsql, intl, mbstring, gd, bcmath, zip, xml, curl

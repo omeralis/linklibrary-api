@@ -1,3 +1,5 @@
+> 2026-11-03 audit correction: this report records earlier deployment actions only. The later audit disproved code immutability. See REMEDIATION_REPORT.md and VPS_MANUAL_REMEDIATION.md. Local remediation is not installed; this task has not verified current production health.
+
 # LinkLibrary VPS deployment report
 
 Completed 2026-11-02 (Asia/Riyadh). Status: application services DEPLOYED and verified over trusted IP HTTPS. External provider setup and off-host disaster recovery remain incomplete. This report supersedes the earlier audit/access-blocked status.

@@ -1,97 +1,159 @@
-name: Deploy API
-# DISABLED BY DEFAULT: the deploy job runs only when the repository variable DEPLOY_ENABLED is exactly 'true'.
-# Tests always run on main; nothing is uploaded to the server until the switch is turned on (see docs/CICD.md).
-on:
-  push:
-    branches: [main]
+# Production is manual-only; builds run without the production environment or SSH secrets.
+name: Manual Production api
+'on':
   workflow_dispatch:
     inputs:
       action:
-        description: deploy (HEAD of main, tests re-run) or rollback
         type: choice
-        options: [deploy, rollback]
-        default: deploy
+        options:
+          - deploy
+          - rollback
+        required: true
+      commit_sha:
+        description: Full approved SHA; must equal current main (also required for rollback tooling)
+        type: string
+        required: true
+      authorization:
+        description: Type "deploy linklibrary-api" or "rollback linklibrary-api"
+        type: string
+        required: true
       release_id:
-        description: "rollback only: release directory name (empty = previous release)"
-        required: false
+        description: Explicit known release ID; required for rollback
         type: string
 permissions:
   contents: read
 concurrency:
-  group: linklibrary-production     # per repo; the server also holds a flock so api and web releases never overlap
+  group: linklibrary-production
   cancel-in-progress: false
 jobs:
-  test:
-    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
-    uses: ./.github/workflows/_test.yml
-
-  deploy:
-    needs: test
-    if: ${{ vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment: production        # configure required reviewers here for a manual approval gate
+  authorize:
+    if: ${{ github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true' && inputs.authorization == format('{0} linklibrary-api', inputs.action) }}
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-        with: { persist-credentials: false }
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate exact approved main SHA before using release code
+        env:
+          SHA: ${{ inputs.commit_sha }}
+          ACTION: ${{ inputs.action }}
+          RID: ${{ inputs.release_id }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$SHA" = "$(git rev-parse origin/main)"
+          test "$SHA" = "$GITHUB_SHA"
+          if [ "$ACTION" = rollback ]; then
+            [[ "$RID" =~ ^([0-9]{8}-[0-9]{6}-(api|web)-[0-9a-f]{7}|[0-9]{8}-[0-9]{2})$ ]] || exit 1
+          fi
+  test:
+    needs: authorize
+    if: ${{ inputs.action == 'deploy' }}
+    uses: ./.github/workflows/_test.yml
+    with:
+      ref: ${{ inputs.commit_sha }}
+  deploy:
+    needs:
+      - authorize
+      - test
+      - deployment-security
+      - build
+    if: ${{ inputs.action == 'deploy' }}
+    environment: production
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit_sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4; upstream verified 2026-11-03
+        with:
+          name: approved-api-release
+          path: ${{ runner.temp }}/ll-artifact
+      - name: Verify opaque artifact before loading SSH credentials
+        run: python3 -I deploy/verify-artifact.py
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/ll-artifact
+          SHA: ${{ inputs.commit_sha }}
+          COMPONENT: api
+      - name: Restricted SSH deploy with EXIT cleanup
+        run: bash deploy/ssh-operation.sh
+        env:
+          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
+          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
+          HOST: ${{ vars.LL_SSH_HOST }}
+          PORT: ${{ vars.LL_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.LL_SSH_USER }}
+          ACTION: deploy
+          COMPONENT: api
+          SHA: ${{ inputs.commit_sha }}
+          ARTIFACT_DIR: ${{ runner.temp }}/ll-artifact
+      - name: Runner credential cleanup backstop
+        if: always()
+        run: bash deploy/cleanup-ssh.sh
+  rollback:
+    needs: authorize
+    if: ${{ inputs.action == 'rollback' }}
+    environment: production
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit_sha }}
+      - name: Explicit rollback target with EXIT cleanup
+        run: bash deploy/ssh-operation.sh
+        env:
+          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
+          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
+          HOST: ${{ vars.LL_SSH_HOST }}
+          PORT: ${{ vars.LL_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.LL_SSH_USER }}
+          ACTION: rollback
+          RID: ${{ inputs.release_id }}
+      - name: Runner credential cleanup backstop
+        if: always()
+        run: bash deploy/cleanup-ssh.sh
+  deployment-security:
+    needs: authorize
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit_sha }}
+      - run: sudo python3 -B deploy/tests/test_release.py
+      - run: python3 -B deploy/tests/test_packaging.py
+  build:
+    needs:
+      - authorize
+      - test
+      - deployment-security
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit_sha }}
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2; upstream verified 2026-11-03
         with:
           php-version: '8.4'
           extensions: pgsql, pdo_pgsql, intl, mbstring, gd, bcmath, zip, xml, curl
           tools: composer:v2
           coverage: none
-      - name: Build release (tracked files only, locked production dependencies)
-        run: |
-          mkdir -p build/api
-          git archive HEAD | tar -x -C build/api
-          cd build/api
-          composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts
-          APP_ENV=production APP_KEY="base64:$(openssl rand -base64 32)" php artisan package:discover --ansi
-          rm -rf .github tests deploy docs node_modules .env .env.* 
-          tar --hard-dereference --owner=0 --group=0 --numeric-owner -czf "$GITHUB_WORKSPACE/release.tgz" .
-          sha256sum "$GITHUB_WORKSPACE/release.tgz" | cut -d' ' -f1 > "$GITHUB_WORKSPACE/release.sha256"
-      - name: Prepare SSH (dedicated restricted key, pinned host key)
-        env:
-          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
-          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
-        run: |
-          test -n "$KEY" && test -n "$KNOWN" || { echo "missing SSH secrets"; exit 1; }
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/ll_deploy && chmod 600 ~/.ssh/ll_deploy
-          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
-      - name: Upload, promote, smoke-test (server rolls back automatically if smoke fails)
-        env:
-          HOST: ${{ vars.LL_SSH_HOST }}
-          PORT: ${{ vars.LL_SSH_PORT || '22' }}
-          SSH_USER: ${{ vars.LL_SSH_USER || 'llci' }}
-        run: |
-          [[ "$HOST" =~ ^[A-Za-z0-9.-]{1,253}$ && "$PORT" =~ ^[0-9]{1,5}$ && "$SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid SSH variables"; exit 1; }
-          SSH="ssh -i $HOME/.ssh/ll_deploy -p $PORT -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes $SSH_USER@$HOST"
-          $SSH "upload api $GITHUB_SHA $(cat release.sha256)" < release.tgz
-          $SSH "deploy api $GITHUB_SHA $(cat release.sha256)"
-      - name: Cleanup key
-        if: always()
-        run: rm -f ~/.ssh/ll_deploy
-
-  rollback:
-    if: ${{ inputs.action == 'rollback' && vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    environment: production
-    steps:
-      - name: Roll back (symlink switch only; database is never rolled back)
-        env:
-          KEY: ${{ secrets.LL_SSH_PRIVATE_KEY }}
-          KNOWN: ${{ secrets.LL_SSH_KNOWN_HOSTS }}
-          HOST: ${{ vars.LL_SSH_HOST }}
-          PORT: ${{ vars.LL_SSH_PORT || '22' }}
-          SSH_USER: ${{ vars.LL_SSH_USER || 'llci' }}
-          RID: ${{ inputs.release_id }}
-        run: |
-          [[ "$HOST" =~ ^[A-Za-z0-9.-]{1,253}$ && "$PORT" =~ ^[0-9]{1,5}$ && "$SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "invalid SSH variables"; exit 1; }
-          [[ -z "$RID" || "$RID" =~ ^[0-9A-Za-z._-]{3,80}$ ]] || { echo "bad release id"; exit 1; }
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/ll_deploy && chmod 600 ~/.ssh/ll_deploy
-          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
-          ssh -i ~/.ssh/ll_deploy -p "$PORT" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes "$SSH_USER@$HOST" "rollback $RID"
-          rm -f ~/.ssh/ll_deploy
+      - name: Build approved production artifact
+        run: bash deploy/build-api.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4; upstream verified 2026-11-03
+        with:
+          name: approved-api-release
+          path: |
+            release.tgz
+            release.sha256
+          retention-days: 1
+          if-no-files-found: error
