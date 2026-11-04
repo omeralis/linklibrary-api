@@ -28,6 +28,7 @@ DIGEST = re.compile(r'[0-9a-f]{64}\Z')
 CACHES = {'api/bootstrap/cache', 'web/.next/cache'}
 MANIFEST = '.ll-manifest.json'
 LIMIT = 400 * 1024**2
+LOCK_WAIT = 900  # seconds a release waits for another running release
 NOFOLLOW = os.O_NOFOLLOW
 DIR = os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW
 
@@ -498,7 +499,15 @@ class Engine:
         locked = os.fstat(self.lock_fd)
         require(locked.st_uid == 0 and stat.S_ISREG(locked.st_mode) and locked.st_nlink == 1 and
                 not locked.st_mode & 0o022, 'untrusted lock')
-        fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = time.monotonic() + LOCK_WAIT
+        while True:
+            try:
+                fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                # API and web pipelines may finish together; queue behind the running release instead of failing it.
+                require(time.monotonic() < deadline, 'another release is still running')
+                time.sleep(min(5, max(0.05, LOCK_WAIT / 10)))
         self.staging = self.root / ('.staging-' + secrets.token_hex(12))
         self.staging.mkdir(mode=0o700)
         handlers = {}
@@ -580,7 +589,11 @@ class Engine:
             self.host.restart()
             self.host.readiness(self.root / 'releases' / self.candidate)
             self.host.warnings()
-            self.retain()
+            try:
+                self.retain()
+            except (Refused, OSError) as error:
+                # Housekeeping only: the new release is active, healthy and verified; never roll it back for this.
+                print('WARNING: old-release cleanup skipped (' + type(error).__name__ + '); administrator review needed', flush=True)
             remove_tree(self.root_fd, self.staging.name, os.fstat(self.root_fd).st_dev)
             atomic_json(self.root_fd, '.ll-previous.json', {'release': self.original})
             self.completed = True

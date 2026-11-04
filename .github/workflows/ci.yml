@@ -39,4 +39,5 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
       - run: sudo python3 -B deploy/tests/test_release.py
+      - run: sudo python3 -B deploy/tests/test_bootstrap.py
       - run: python3 -B deploy/tests/test_packaging.py

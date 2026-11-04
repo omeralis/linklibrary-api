@@ -25,7 +25,9 @@ function llDeploymentReadiness(array $config, callable $databaseProbe): array
             && ($config['stateful'] ?? []) === [$stateful],
         'runtime_stores' => ($config['cache'] ?? '') === 'database' && ($config['queue'] ?? '') === 'database'
             && ($config['retry_after'] ?? 0) > 120,
-        'security_policy' => ($config['allow_unverified'] ?? true) === false,
+        // Strict policy, or the approved temporary policy (unverified sharing ONLY while scanning is explicitly "Coming Soon").
+        'security_policy' => is_bool($config['allow_unverified'] ?? null) && is_bool($config['scanning_coming_soon'] ?? null)
+            && ($config['allow_unverified'] === false || $config['scanning_coming_soon'] === true),
         'database_runtime' => false,
     ];
     try {
@@ -57,6 +59,7 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
             'stateful' => config('sanctum.stateful'), 'cache' => config('cache.default'),
             'queue' => config('queue.default'), 'retry_after' => config('queue.connections.database.retry_after'),
             'allow_unverified' => config('linklibrary.security.allow_unverified_sharing', false),
+            'scanning_coming_soon' => config('linklibrary.security.scanning_coming_soon', false),
         ], fn () => DB::selectOne('select current_database() db,current_user usr'));
         echo json_encode($result, JSON_THROW_ON_ERROR).PHP_EOL;
         exit($result['ready'] ? 0 : 1);

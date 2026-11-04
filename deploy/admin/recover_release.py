@@ -29,7 +29,13 @@ def recover(root,original,journal_sha,host,uid,gid):
         ll.require(state.get('original')==original and ll.RELEASE.fullmatch(original),'unexpected original release')
         ll.Trees(root,uid,gid).inventory(root/'releases'/original)
         ll.atomic_json(fd,'.ll-recovery-evidence-'+secrets.token_hex(8)+'.json',state)
-        host.reset_password()
+        if state.get('operation') != 'bootstrap':
+            host.reset_password()
+        else:
+            ll.require(not state.get('migrator_credential_may_be_set'), 'unexpected bootstrap migration credential')
+            gate = json.loads(host.app(None, str(root / 'tools/ll-bootstrap-check.php'), str(root / 'releases' / original / 'api')))
+            ll.require(gate.get('ready') is True and gate.get('schema') == state.get('schema'),
+                       'bootstrap recovery schema changed or has pending migrations')
         engine=ll.Engine(root,host,uid,gid);engine.root_fd=fd
         engine.switch(original)
         try:

@@ -12,7 +12,7 @@ class PackagingTests(unittest.TestCase):
     def test_openapi_only_and_no_environment_or_cache(self):
         with tempfile.TemporaryDirectory() as d:
             source=Path(d)/'source';source.mkdir()
-            for rel in ['artisan','bootstrap/app.php','vendor/autoload.php','docs/openapi.yaml','docs/CICD.md','.env','.env.production','bootstrap/cache/config.php','tests/secret-fixture']:
+            for rel in ['artisan','bootstrap/app.php','vendor/autoload.php','docs/openapi.yaml','docs/CICD.md','.env','.env.production','bootstrap/cache/config.php','tests/secret-fixture','storage/app/private/fixture-secret','storage/framework/cache/.gitignore']:
                 p=source/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('fixture')
             out=Path(d)/'release.tgz';module.package('api',source,out,'a'*40)
             with tarfile.open(out,'r:gz') as t:
@@ -23,6 +23,7 @@ class PackagingTests(unittest.TestCase):
                 self.assertNotIn('.env.production',names)
                 self.assertNotIn('bootstrap/cache/config.php',names)
                 self.assertNotIn('tests/secret-fixture',names)
+                self.assertFalse(any(n == 'storage' or n.startswith('storage/') for n in names))
                 self.assertEqual(json.load(t.extractfile('.ll-build.json'))['commit'],'a'*40)
                 self.assertTrue(all(m.uid==0 and m.gid==0 and not m.mode & 0o022 for m in t if not m.issym()))
             self.assertRegex(out.with_suffix('.sha256').read_text(),r'^[0-9a-f]{64}\n$')

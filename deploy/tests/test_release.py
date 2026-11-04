@@ -335,10 +335,43 @@ class SecurityHarness(unittest.TestCase):
 
     def test_finalization_failure_recovers(self):
         class FailingFinalization(release.Engine):
-            def retain(self):raise release.Refused('finalization failed')
+            def journal(self,phase):
+                if phase=='committed':raise release.Refused('finalization failed')
+                super().journal(phase)
         engine,_,run=self.deploy(engine_type=FailingFinalization)
         with self.assertRaises(release.Refused):run()
         self.unchanged();self.assertTrue(engine.recovery_attempted)
+
+    def test_old_release_cleanup_failure_never_rolls_back_a_healthy_release(self):
+        class FailingCleanup(release.Engine):
+            def retain(self):raise release.Refused('cleanup failed')
+        engine,_,run=self.deploy(engine_type=FailingCleanup)
+        run()
+        self.assertTrue(engine.completed);self.assertFalse(engine.recovery_attempted)
+        self.assertEqual(self.root.joinpath('current').resolve().name,engine.candidate)
+
+    def test_release_waits_for_a_running_release_then_gives_up(self):
+        import fcntl
+        engine,_,run=self.deploy()
+        lock=os.open(self.root/'.ll-release.lock',os.O_CREAT|os.O_RDWR,0o600)
+        try:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            with mock.patch.object(release,'LOCK_WAIT',0.3):
+                started=time.monotonic()
+                with self.assertRaises(release.Refused):run()
+                self.assertGreaterEqual(time.monotonic()-started,0.25)
+            self.unchanged()
+        finally:
+            os.close(lock)
+
+    def test_release_proceeds_once_the_other_release_finishes(self):
+        import fcntl,threading
+        engine,_,run=self.deploy()
+        lock=os.open(self.root/'.ll-release.lock',os.O_CREAT|os.O_RDWR,0o600)
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        threading.Timer(0.3,lambda:os.close(lock)).start()
+        with mock.patch.object(release,'LOCK_WAIT',10):run()
+        self.assertTrue(engine.completed)
 
     def test_sigterm_migration_and_after_activation(self):
         for phase in ('signal-migration','signal-activated'):

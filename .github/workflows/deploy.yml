@@ -1,6 +1,11 @@
-# Production is manual-only; builds run without the production environment or SSH secrets.
-name: Manual Production api
+# Production deploys AUTOMATICALLY after a merge/push to main (only while repository variable DEPLOY_ENABLED is "true").
+# Tests, deployment-security tests and the build run WITHOUT the production environment or SSH secrets; secrets exist only in the final job.
+# Manual dispatch remains for rollback (explicit release id + typed authorization) and for re-running main HEAD.
+name: Production api (auto on main)
 'on':
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       action:
@@ -9,14 +14,9 @@ name: Manual Production api
           - deploy
           - rollback
         required: true
-      commit_sha:
-        description: Full approved SHA; must equal current main (also required for rollback tooling)
-        type: string
-        required: true
       authorization:
-        description: Type "deploy linklibrary-api" or "rollback linklibrary-api"
+        description: 'Rollback only: type "rollback linklibrary-api"'
         type: string
-        required: true
       release_id:
         description: Explicit known release ID; required for rollback
         type: string
@@ -27,17 +27,17 @@ concurrency:
   cancel-in-progress: false
 jobs:
   authorize:
-    if: ${{ github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true' && inputs.authorization == format('{0} linklibrary-api', inputs.action) }}
+    if: ${{ github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'push' || inputs.action == 'deploy' || inputs.authorization == 'rollback linklibrary-api') }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Validate exact approved main SHA before using release code
+      - name: Only the current tip of main may be deployed
         env:
-          SHA: ${{ inputs.commit_sha }}
-          ACTION: ${{ inputs.action }}
+          SHA: ${{ github.sha }}
+          ACTION: ${{ inputs.action || 'deploy' }}
           RID: ${{ inputs.release_id }}
         run: |
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -48,17 +48,17 @@ jobs:
           fi
   test:
     needs: authorize
-    if: ${{ inputs.action == 'deploy' }}
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
     uses: ./.github/workflows/_test.yml
     with:
-      ref: ${{ inputs.commit_sha }}
+      ref: ${{ github.sha }}
   deploy:
     needs:
       - authorize
       - test
       - deployment-security
       - build
-    if: ${{ inputs.action == 'deploy' }}
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
     environment: production
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
         with:
           persist-credentials: false
-          ref: ${{ inputs.commit_sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4; upstream verified 2026-11-03
         with:
           name: approved-api-release
@@ -75,7 +75,7 @@ jobs:
         run: python3 -I deploy/verify-artifact.py
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/ll-artifact
-          SHA: ${{ inputs.commit_sha }}
+          SHA: ${{ github.sha }}
           COMPONENT: api
       - name: Restricted SSH deploy with EXIT cleanup
         run: bash deploy/ssh-operation.sh
@@ -87,14 +87,14 @@ jobs:
           SSH_USER: ${{ vars.LL_SSH_USER }}
           ACTION: deploy
           COMPONENT: api
-          SHA: ${{ inputs.commit_sha }}
+          SHA: ${{ github.sha }}
           ARTIFACT_DIR: ${{ runner.temp }}/ll-artifact
       - name: Runner credential cleanup backstop
         if: always()
         run: bash deploy/cleanup-ssh.sh
   rollback:
     needs: authorize
-    if: ${{ inputs.action == 'rollback' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'rollback' }}
     environment: production
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
         with:
           persist-credentials: false
-          ref: ${{ inputs.commit_sha }}
+          ref: ${{ github.sha }}
       - name: Explicit rollback target with EXIT cleanup
         run: bash deploy/ssh-operation.sh
         env:
@@ -118,29 +118,30 @@ jobs:
         run: bash deploy/cleanup-ssh.sh
   deployment-security:
     needs: authorize
-    if: ${{ inputs.action == 'deploy' }}
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
         with:
           persist-credentials: false
-          ref: ${{ inputs.commit_sha }}
+          ref: ${{ github.sha }}
       - run: sudo python3 -B deploy/tests/test_release.py
+      - run: sudo python3 -B deploy/tests/test_bootstrap.py
       - run: python3 -B deploy/tests/test_packaging.py
   build:
     needs:
       - authorize
       - test
       - deployment-security
-    if: ${{ inputs.action == 'deploy' }}
+    if: ${{ github.event_name == 'push' || inputs.action == 'deploy' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; upstream verified 2026-11-03
         with:
           persist-credentials: false
-          ref: ${{ inputs.commit_sha }}
+          ref: ${{ github.sha }}
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2; upstream verified 2026-11-03
         with:
           php-version: '8.4'

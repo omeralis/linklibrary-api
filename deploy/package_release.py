@@ -30,6 +30,7 @@ def package(component, source, output, commit):
         if rel == 'bootstrap/cache' or rel.startswith('bootstrap/cache/'): return False
         if rel == '.next/cache' or rel.startswith('.next/cache/'): return False
         if component == 'api' and p.parts[0] == 'docs': return rel in ('docs', 'docs/openapi.yaml')
+        if component == 'api' and p.parts[0] == 'storage': return False
         if component == 'web' and p.parts[0] == 'docs': return False
         return True
     paths = []
