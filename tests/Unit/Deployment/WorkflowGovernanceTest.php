@@ -7,13 +7,16 @@ use Symfony\Component\Yaml\Yaml;
 
 class WorkflowGovernanceTest extends TestCase
 {
-    public function test_production_requires_manual_exact_sha_authorization_and_environment(): void
+    public function test_production_deploys_only_from_main_behind_the_switch_with_exact_sha_and_environment(): void
     {
         $workflow = Yaml::parseFile(__DIR__.'/../../../.github/workflows/deploy.yml');
-        $this->assertSame(['workflow_dispatch'], array_keys($workflow['on']));
+        $this->assertEqualsCanonicalizing(['push', 'workflow_dispatch'], array_keys($workflow['on']));
+        $this->assertSame(['main'], $workflow['on']['push']['branches']);
         $this->assertSame(['contents' => 'read'], $workflow['permissions']);
         $this->assertFalse($workflow['concurrency']['cancel-in-progress']);
         $this->assertStringContainsString('DEPLOY_ENABLED', $workflow['jobs']['authorize']['if']);
+        $this->assertStringContainsString("github.ref == 'refs/heads/main'", $workflow['jobs']['authorize']['if']);
+        $this->assertStringContainsString("github.event_name == 'push'", $workflow['jobs']['authorize']['if']);
         $this->assertStringContainsString('inputs.authorization', $workflow['jobs']['authorize']['if']);
         foreach (['deploy', 'rollback'] as $job) {
             $this->assertSame('production', $workflow['jobs'][$job]['environment']);
