@@ -17,7 +17,7 @@ class DeploymentReadinessTest extends TestCase
             'secure' => true, 'http_only' => true, 'same_site' => 'lax', 'session_driver' => 'database',
             'app_url' => 'https://example.invalid', 'frontend_url' => 'https://example.invalid',
             'cors' => ['https://example.invalid'], 'stateful' => ['example.invalid'],
-            'cache' => 'database', 'queue' => 'database', 'retry_after' => 180, 'allow_unverified' => false,
+            'cache' => 'database', 'queue' => 'database', 'retry_after' => 180, 'allow_unverified' => false, 'scanning_coming_soon' => false,
         ];
     }
 
