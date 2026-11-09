@@ -75,9 +75,16 @@ class UnverifiedSharingPolicyTest extends TestCase
         $this->useSecurityPolicy(allowUnverifiedSharing: true, scanningComingSoon: true);
         $user = $this->actingAsUser();
 
-        foreach ([ExtractionStatus::PENDING, ExtractionStatus::PROCESSING, ExtractionStatus::FAILED, ExtractionStatus::BLOCKED] as $extraction) {
+        foreach ([ExtractionStatus::PENDING, ExtractionStatus::PROCESSING, ExtractionStatus::FAILED] as $extraction) {
             $saved = $this->savedLinkFor($user, link: $this->unknownLink(['extraction_status' => $extraction]));
             $this->patchJson("/api/v1/links/{$saved->public_id}/visibility", ['visibility' => 'PUBLIC'])
+                ->assertStatus(422)->assertJsonPath('code', 'LINK_NOT_PUBLISHABLE');
+        }
+
+        // BLOCKED for our own safety (private address, unsafe redirect, security policy) stays unpublishable.
+        foreach (['BLOCKED_IP', 'UNSAFE_REDIRECT', 'SECURITY_POLICY', null] as $code) {
+            $unsafe = $this->savedLinkFor($user, link: $this->unknownLink(['extraction_status' => ExtractionStatus::BLOCKED, 'extraction_error_code' => $code]));
+            $this->patchJson("/api/v1/links/{$unsafe->public_id}/visibility", ['visibility' => 'PUBLIC'])
                 ->assertStatus(422)->assertJsonPath('code', 'LINK_NOT_PUBLISHABLE');
         }
 
@@ -93,6 +100,26 @@ class UnverifiedSharingPolicyTest extends TestCase
         // Ownership: someone else's link is a 404.
         Sanctum::actingAs($user);
         $this->patchJson("/api/v1/links/{$mine->public_id}/visibility", ['visibility' => 'PUBLIC'])->assertNotFound();
+    }
+
+    public function test_site_that_refuses_robots_can_be_published_and_shared_with_manual_details(): void
+    {
+        $this->useSecurityPolicy(allowUnverifiedSharing: true, scanningComingSoon: true);
+        $user = $this->actingAsUser();
+
+        foreach (['ROBOTS_DISALLOWED', 'ACCESS_RESTRICTED'] as $code) {
+            $saved = $this->savedLinkFor($user, link: $this->unknownLink(['extraction_status' => ExtractionStatus::BLOCKED, 'extraction_error_code' => $code]));
+            $this->patchJson("/api/v1/links/{$saved->public_id}/visibility", ['visibility' => 'PUBLIC'])->assertOk();
+            $this->getJson("/api/v1/links/{$saved->public_id}")
+                ->assertOk()
+                ->assertJsonPath('data.permissions.can_publish', true)
+                ->assertJsonPath('data.permissions.can_share', true)
+                ->assertJsonPath('data.security.status', 'UNKNOWN');
+        }
+
+        // Still never CLEAR, and a security-blocked link stays blocked even with that extraction code.
+        $malicious = $this->savedLinkFor($user, link: $this->unknownLink(['security_status' => SecurityStatus::MALICIOUS, 'extraction_status' => ExtractionStatus::BLOCKED, 'extraction_error_code' => 'ROBOTS_DISALLOWED']));
+        $this->patchJson("/api/v1/links/{$malicious->public_id}/visibility", ['visibility' => 'PUBLIC'])->assertStatus(422);
     }
 
     public function test_suspicious_malicious_and_pending_links_stay_blocked(): void

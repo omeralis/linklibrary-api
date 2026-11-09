@@ -21,11 +21,19 @@ use Illuminate\Database\Eloquent\Builder;
  * A CLEAR verdict whose TTL has passed is treated as UNKNOWN until it is rescanned.
  *
  * Temporary, reversible policy (`security.allow_unverified_sharing`): UNKNOWN links may be published and shared
- * by their owner once metadata processing finished (extraction COMPLETED/PARTIAL), and are then served publicly
- * with a "not security-verified" warning. They are NEVER marked CLEAR. PENDING, SUSPICIOUS and MALICIOUS stay blocked.
+ * by their owner once metadata processing finished (extraction COMPLETED/PARTIAL, or BLOCKED because the destination
+ * itself refuses automated fetching: robots.txt / login or paywall — the owner then supplies the details by hand),
+ * and are then served publicly with a "not security-verified" warning. They are NEVER marked CLEAR. PENDING,
+ * SUSPICIOUS and MALICIOUS stay blocked, and so does an extraction blocked for our own safety (SSRF / security policy).
  */
 class SecurityPolicy
 {
+    /**
+     * Extraction BLOCKED codes meaning "the site does not allow robots / needs a login". Not a security verdict about
+     * the link; any other BLOCKED code (private address, unsafe redirect, security policy) stays unpublishable.
+     */
+    public const SITE_REFUSES_FETCH = ['ROBOTS_DISALLOWED', 'ACCESS_RESTRICTED'];
+
     public function __construct(
         private readonly bool $fetchWhenUnknown = true,
         private readonly bool $allowUnverifiedSharing = false,
@@ -48,7 +56,15 @@ class SecurityPolicy
     {
         return $this->allowUnverifiedSharing
             && $link->effectiveSecurityStatus() === SecurityStatus::UNKNOWN
-            && in_array($link->extraction_status, [ExtractionStatus::COMPLETED, ExtractionStatus::PARTIAL], true);
+            && $this->metadataProcessed($link);
+    }
+
+    /** Fetched (COMPLETED/PARTIAL) or the site itself refuses automated access (details are entered manually). */
+    private function metadataProcessed(Link $link): bool
+    {
+        return in_array($link->extraction_status, [ExtractionStatus::COMPLETED, ExtractionStatus::PARTIAL], true)
+            || ($link->extraction_status === ExtractionStatus::BLOCKED
+                && in_array($link->extraction_error_code, self::SITE_REFUSES_FETCH, true));
     }
 
     /**
@@ -64,7 +80,11 @@ class SecurityPolicy
             $w->where(fn (Builder $c) => $c->where('security_status', SecurityStatus::CLEAR->value)->where('security_expires_at', '>', now()));
             if ($this->allowUnverifiedSharing) {
                 $w->orWhere(fn (Builder $u) => $u
-                    ->whereIn('extraction_status', [ExtractionStatus::COMPLETED->value, ExtractionStatus::PARTIAL->value])
+                    ->where(fn (Builder $m) => $m
+                        ->whereIn('extraction_status', [ExtractionStatus::COMPLETED->value, ExtractionStatus::PARTIAL->value])
+                        ->orWhere(fn (Builder $b) => $b
+                            ->where('extraction_status', ExtractionStatus::BLOCKED->value)
+                            ->whereIn('extraction_error_code', self::SITE_REFUSES_FETCH)))
                     ->where(fn (Builder $x) => $x
                         ->where('security_status', SecurityStatus::UNKNOWN->value)
                         ->orWhere(fn (Builder $e) => $e->where('security_status', SecurityStatus::CLEAR->value)
